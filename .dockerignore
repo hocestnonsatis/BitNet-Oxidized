@@ -1,0 +1,10 @@
+/target
+/.git
+/.github
+/docs
+/k8s
+/scripts
+*.md
+LICENSE
+.gitignore
+.dockerignore

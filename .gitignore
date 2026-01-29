@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+Cargo.lock
+*.pdb
+*.so
+*.dylib
+*.dll
+.env
+.idea
+.vscode
+*.swp
+*.swo
+criterion/
+
+# Large model artifacts (download via scripts/ and models/README.md)
+*.safetensors
+*.gguf

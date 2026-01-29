@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bitnet-oxidized
+  labels:
+    app: bitnet-oxidized
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bitnet-oxidized
+  template:
+    metadata:
+      labels:
+        app: bitnet-oxidized
+    spec:
+      containers:
+        - name: bitnet-oxidized
+          image: bitnet-oxidized:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --model
+            - /models/model.gguf
+            - --port
+            - "8080"
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            limits:
+              memory: "4Gi"
+              cpu: "4"
+            requests:
+              memory: "2Gi"
+              cpu: "2"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          # In production, use a PVC or cloud storage (e.g. CSI driver)
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bitnet-oxidized
+  labels:
+    app: bitnet-oxidized
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: bitnet-oxidized
