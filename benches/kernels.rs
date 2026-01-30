@@ -1,7 +1,7 @@
 //! Criterion benchmarks for mat-vec kernels.
 
 use bitnet_oxidized::kernels::{
-    mat_vec_mul_basic, mat_vec_mul_blocked, mat_vec_mul_lut, TernaryTensor,
+    mat_vec_mul_basic, mat_vec_mul_blocked, mat_vec_mul_lut, mat_vec_mul_simd, TernaryTensor,
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::Rng;
@@ -28,6 +28,9 @@ fn bench_matvec(c: &mut Criterion) {
     });
     c.bench_function("matvec_lut_256x512", |b| {
         b.iter(|| mat_vec_mul_lut(black_box(&weight), black_box(&input), black_box(&mut out)))
+    });
+    c.bench_function("matvec_simd_256x512", |b| {
+        b.iter(|| mat_vec_mul_simd(black_box(&weight), black_box(&input), black_box(&mut out)))
     });
 }
 

@@ -5,6 +5,9 @@ Convert HuggingFace BitNet/LLaMA safetensors to GGUF for bitnet-oxidized.
 Expects a downloaded HF model dir with config.json, model.safetensors, (optional) tokenizer.json.
 Writes a single .gguf file with bitnet-oxidized tensor names and I2_S (2-bit) ternary weights.
 
+**Do not run on phones/Termux** — loads the full model into RAM and can crash the device.
+Run on a desktop or server, then copy the .gguf file to the device. See docs/termux_and_phones.md.
+
 Usage:
     python scripts/convert_huggingface_to_gguf.py \
         --input models/Llama3-8B-1.58-100B-tokens \

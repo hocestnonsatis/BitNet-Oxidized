@@ -300,11 +300,11 @@ fn run_profile(model_path: &std::path::Path, iterations: usize) -> Result<()> {
 }
 
 fn run_quantize(input: &std::path::Path, output: &std::path::Path) -> Result<()> {
-    anyhow::bail!(
-        "Quantize not yet implemented: input={:?} output={:?}. Use examples/quantize_model.rs with in-memory weights.",
-        input,
-        output
-    )
+    use bitnet_oxidized::model::gguf;
+    let model = gguf::load_gguf(input).map_err(|e| anyhow::anyhow!("load GGUF: {:?}", e))?;
+    gguf::save_gguf(&model, output).map_err(|e| anyhow::anyhow!("save GGUF: {:?}", e))?;
+    println!("Saved quantized model to {}", output.display());
+    Ok(())
 }
 
 /// Naive tokenizer: split on whitespace and map to token IDs (hash % vocab).

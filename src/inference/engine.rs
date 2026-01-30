@@ -1,6 +1,7 @@
 //! Inference engine: forward pass through the BitNet model.
 
-use crate::kernels::mat_vec_mul_lut;
+use crate::inference::cache::KVCache;
+use crate::kernels::mat_vec_mul_simd;
 use crate::model::{BitNetLayer, BitNetModel};
 use anyhow::Result;
 
@@ -14,6 +15,27 @@ impl InferenceEngine {
     pub fn new(model: BitNetModel) -> Self {
         let hidden_size = model.hidden_size();
         Self { model, hidden_size }
+    }
+
+    /// Create an empty KV cache for this model (use with `forward_step` for generation).
+    pub fn create_cache(&self) -> KVCache {
+        KVCache::new(&self.model.config)
+    }
+
+    /// Run one token through the model using the KV cache (attend over cache + new K/V, then append).
+    /// Use for autoregressive decoding: call once per prompt token to prefill, then once per generated token.
+    /// Returns logits for the current token.
+    pub fn forward_step(&self, token_id: usize, cache: &mut KVCache) -> Result<Vec<f32>> {
+        let mut hidden = self.embed_one_token(token_id);
+        for (layer_idx, layer) in self.model.layers.iter().enumerate() {
+            hidden = self.forward_layer_step(&hidden, layer, layer_idx, cache)?;
+        }
+        cache.advance();
+        self.apply_rms_norm(&mut hidden, &self.model.norm);
+        let vocab_size = self.model.vocab_size();
+        let mut logits = vec![0.0f32; vocab_size];
+        mat_vec_mul_simd(&self.model.lm_head, &hidden, &mut logits);
+        Ok(logits)
     }
 
     /// Run forward pass; returns logits for the last token [vocab_size].
@@ -35,7 +57,7 @@ impl InferenceEngine {
         // LM head: [vocab_size, hidden_size] @ [hidden_size]
         let vocab_size = self.model.vocab_size();
         let mut logits = vec![0.0f32; vocab_size];
-        mat_vec_mul_lut(&self.model.lm_head, &out_hidden, &mut logits);
+        mat_vec_mul_simd(&self.model.lm_head, &out_hidden, &mut logits);
         Ok(logits)
     }
 
@@ -68,6 +90,13 @@ impl InferenceEngine {
         Ok(results)
     }
 
+    /// Embed a single token to hidden state [hidden_size].
+    fn embed_one_token(&self, token_id: usize) -> Vec<f32> {
+        let vocab_size = self.model.vocab_size();
+        let id = token_id.min(vocab_size.saturating_sub(1));
+        self.model.embeddings[id].clone()
+    }
+
     /// Embed token IDs to hidden states [seq_len, hidden_size].
     pub fn embed_tokens(&self, input_ids: &[usize]) -> Vec<Vec<f32>> {
         let vocab_size = self.model.vocab_size();
@@ -78,6 +107,123 @@ impl InferenceEngine {
                 self.model.embeddings[id].clone()
             })
             .collect()
+    }
+
+    /// One layer for a single token: pre-norm, Q/K/V, append to cache, attention over cache, residual, post-norm, FFN, residual.
+    fn forward_layer_step(
+        &self,
+        hidden: &[f32],
+        layer: &BitNetLayer,
+        layer_idx: usize,
+        cache: &mut KVCache,
+    ) -> Result<Vec<f32>> {
+        let mut normed = hidden.to_vec();
+        self.apply_rms_norm(&mut normed, &layer.input_layernorm);
+
+        let head_dim = self.model.config.head_dim();
+        let num_heads = self.model.config.num_attention_heads;
+
+        let mut q = vec![0.0f32; self.hidden_size];
+        let mut k = vec![0.0f32; self.hidden_size];
+        let mut v = vec![0.0f32; self.hidden_size];
+        mat_vec_mul_simd(&layer.q_proj, &normed, &mut q);
+        mat_vec_mul_simd(&layer.k_proj, &normed, &mut k);
+        mat_vec_mul_simd(&layer.v_proj, &normed, &mut v);
+
+        let keys_for_cache: Vec<Vec<Vec<f32>>> = (0..num_heads)
+            .map(|h| vec![k[h * head_dim..(h + 1) * head_dim].to_vec()])
+            .collect();
+        let values_for_cache: Vec<Vec<Vec<f32>>> = (0..num_heads)
+            .map(|h| vec![v[h * head_dim..(h + 1) * head_dim].to_vec()])
+            .collect();
+
+        let attn_out = self.attention_step(layer, &q, cache, layer_idx, &k, &v);
+        cache.append(layer_idx, &keys_for_cache, &values_for_cache)?;
+        let mut out: Vec<f32> = hidden
+            .iter()
+            .zip(attn_out.iter())
+            .map(|(a, b)| a + b)
+            .collect();
+
+        let mut normed2 = out.clone();
+        self.apply_rms_norm(&mut normed2, &layer.post_attention_layernorm);
+        let ffn_out = self.feed_forward_step(layer, &normed2);
+        for (i, x) in ffn_out.iter().enumerate() {
+            out[i] += x;
+        }
+        Ok(out)
+    }
+
+    /// Causal attention for one position: Q attends over cached K/V plus new K/V (current token).
+    fn attention_step(
+        &self,
+        layer: &BitNetLayer,
+        q: &[f32],
+        cache: &KVCache,
+        layer_idx: usize,
+        new_k: &[f32],
+        new_v: &[f32],
+    ) -> Vec<f32> {
+        let head_dim = self.model.config.head_dim();
+        let num_heads = self.model.config.num_attention_heads;
+        let cached_len = cache.current_length();
+        let seq_len = cached_len + 1;
+        let scale = (head_dim as f32).sqrt().recip();
+
+        let mut out = vec![0.0f32; self.hidden_size];
+        for h in 0..num_heads {
+            let q_start = h * head_dim;
+            let k_cached = cache.keys_layer_head(layer_idx, h);
+            let v_cached = cache.values_layer_head(layer_idx, h);
+
+            let mut scores = vec![0.0f32; seq_len];
+            for s in 0..cached_len {
+                let mut score = 0.0f32;
+                for d in 0..head_dim {
+                    score += q[q_start + d] * k_cached[s][d];
+                }
+                scores[s] = score * scale;
+            }
+            {
+                let mut score = 0.0f32;
+                for d in 0..head_dim {
+                    score += q[q_start + d] * new_k[q_start + d];
+                }
+                scores[cached_len] = score * scale;
+            }
+            let max_s = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exp_sum: f32 = scores.iter().map(|w| (w - max_s).exp()).sum();
+            for w in &mut scores {
+                *w = (*w - max_s).exp() / exp_sum;
+            }
+            for d in 0..head_dim {
+                let mut sum = 0.0f32;
+                for s in 0..cached_len {
+                    sum += scores[s] * v_cached[s][d];
+                }
+                sum += scores[cached_len] * new_v[q_start + d];
+                out[q_start + d] = sum;
+            }
+        }
+
+        let mut o_proj_out = vec![0.0f32; self.hidden_size];
+        mat_vec_mul_simd(&layer.o_proj, &out, &mut o_proj_out);
+        o_proj_out
+    }
+
+    /// FFN for a single hidden vector.
+    fn feed_forward_step(&self, layer: &BitNetLayer, hidden: &[f32]) -> Vec<f32> {
+        let intermed = self.model.config.intermediate_size;
+        let mut gate = vec![0.0f32; intermed];
+        let mut up = vec![0.0f32; intermed];
+        mat_vec_mul_simd(&layer.gate_proj, hidden, &mut gate);
+        mat_vec_mul_simd(&layer.up_proj, hidden, &mut up);
+        for i in 0..intermed {
+            gate[i] = silu(gate[i]) * up[i];
+        }
+        let mut out = vec![0.0f32; self.hidden_size];
+        mat_vec_mul_simd(&layer.down_proj, &gate, &mut out);
+        out
     }
 
     /// One transformer layer: pre-norm attention + residual, pre-norm FFN + residual.
@@ -139,9 +285,9 @@ impl InferenceEngine {
         let mut v = vec![vec![0.0f32; self.hidden_size]; seq_len];
 
         for t in 0..seq_len {
-            mat_vec_mul_lut(&layer.q_proj, &hidden[t], &mut q[t]);
-            mat_vec_mul_lut(&layer.k_proj, &hidden[t], &mut k[t]);
-            mat_vec_mul_lut(&layer.v_proj, &hidden[t], &mut v[t]);
+            mat_vec_mul_simd(&layer.q_proj, &hidden[t], &mut q[t]);
+            mat_vec_mul_simd(&layer.k_proj, &hidden[t], &mut k[t]);
+            mat_vec_mul_simd(&layer.v_proj, &hidden[t], &mut v[t]);
         }
 
         let scale = (head_dim as f32).sqrt().recip();
@@ -183,7 +329,7 @@ impl InferenceEngine {
 
         let mut o_proj_out = vec![vec![0.0f32; self.hidden_size]; seq_len];
         for t in 0..seq_len {
-            mat_vec_mul_lut(&layer.o_proj, &out[t], &mut o_proj_out[t]);
+            mat_vec_mul_simd(&layer.o_proj, &out[t], &mut o_proj_out[t]);
         }
         o_proj_out
     }
@@ -197,8 +343,8 @@ impl InferenceEngine {
         let mut up = vec![vec![0.0f32; intermed]; seq_len];
 
         for t in 0..seq_len {
-            mat_vec_mul_lut(&layer.gate_proj, &hidden[t], &mut gate[t]);
-            mat_vec_mul_lut(&layer.up_proj, &hidden[t], &mut up[t]);
+            mat_vec_mul_simd(&layer.gate_proj, &hidden[t], &mut gate[t]);
+            mat_vec_mul_simd(&layer.up_proj, &hidden[t], &mut up[t]);
         }
 
         for t in 0..seq_len {
@@ -209,7 +355,7 @@ impl InferenceEngine {
 
         let mut out = vec![vec![0.0f32; self.hidden_size]; seq_len];
         for t in 0..seq_len {
-            mat_vec_mul_lut(&layer.down_proj, &gate[t], &mut out[t]);
+            mat_vec_mul_simd(&layer.down_proj, &gate[t], &mut out[t]);
         }
         out
     }

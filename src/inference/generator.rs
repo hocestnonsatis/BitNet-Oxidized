@@ -23,18 +23,28 @@ impl TextGenerator {
         }
     }
 
-    /// Generate token IDs greedily (argmax at each step).
+    /// Generate token IDs greedily (argmax at each step). Uses KV cache: one forward step per token.
     pub fn generate_greedy(&self, prompt_ids: &[usize], max_length: usize) -> Result<Vec<usize>> {
-        let mut ids = prompt_ids.to_vec();
-        for _ in 0..(max_length.saturating_sub(prompt_ids.len())) {
-            let logits = self.engine.forward(&ids)?;
+        if prompt_ids.is_empty() {
+            anyhow::bail!("prompt_ids must not be empty");
+        }
+        let mut cache = self.engine.create_cache();
+        let mut ids = Vec::with_capacity(max_length);
+
+        let mut logits = Vec::new();
+        for &token_id in prompt_ids {
+            logits = self.engine.forward_step(token_id, &mut cache)?;
+            ids.push(token_id);
+        }
+        for _ in ids.len()..max_length {
             let next_id = argmax(&logits).unwrap_or(0);
             ids.push(next_id);
+            logits = self.engine.forward_step(next_id, &mut cache)?;
         }
         Ok(ids)
     }
 
-    /// Generate with top-k sampling and temperature.
+    /// Generate with top-k sampling and temperature. Uses KV cache.
     pub fn generate_top_k(
         &self,
         prompt_ids: &[usize],
@@ -42,18 +52,27 @@ impl TextGenerator {
         k: usize,
         temperature: f32,
     ) -> Result<Vec<usize>> {
-        let mut ids = prompt_ids.to_vec();
+        if prompt_ids.is_empty() {
+            anyhow::bail!("prompt_ids must not be empty");
+        }
+        let mut cache = self.engine.create_cache();
+        let mut ids = Vec::with_capacity(max_length);
         let t = temperature.max(1e-6);
 
-        for _ in 0..(max_length.saturating_sub(prompt_ids.len())) {
-            let logits = self.engine.forward(&ids)?;
+        let mut logits = Vec::new();
+        for &token_id in prompt_ids {
+            logits = self.engine.forward_step(token_id, &mut cache)?;
+            ids.push(token_id);
+        }
+        for _ in ids.len()..max_length {
             let next_id = sample_top_k(&logits, k, t)?;
             ids.push(next_id);
+            logits = self.engine.forward_step(next_id, &mut cache)?;
         }
         Ok(ids)
     }
 
-    /// Generate with top-p (nucleus) sampling and temperature.
+    /// Generate with top-p (nucleus) sampling and temperature. Uses KV cache.
     pub fn generate_top_p(
         &self,
         prompt_ids: &[usize],
@@ -61,13 +80,22 @@ impl TextGenerator {
         p: f32,
         temperature: f32,
     ) -> Result<Vec<usize>> {
-        let mut ids = prompt_ids.to_vec();
+        if prompt_ids.is_empty() {
+            anyhow::bail!("prompt_ids must not be empty");
+        }
+        let mut cache = self.engine.create_cache();
+        let mut ids = Vec::with_capacity(max_length);
         let t = temperature.max(1e-6);
 
-        for _ in 0..(max_length.saturating_sub(prompt_ids.len())) {
-            let logits = self.engine.forward(&ids)?;
+        let mut logits = Vec::new();
+        for &token_id in prompt_ids {
+            logits = self.engine.forward_step(token_id, &mut cache)?;
+            ids.push(token_id);
+        }
+        for _ in ids.len()..max_length {
             let next_id = sample_top_p(&logits, p, t)?;
             ids.push(next_id);
+            logits = self.engine.forward_step(next_id, &mut cache)?;
         }
         Ok(ids)
     }

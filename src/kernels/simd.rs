@@ -49,8 +49,8 @@ unsafe fn mat_vec_mul_avx2(weight: &TernaryTensor, input: &[f32], output: &mut [
             sum = _mm256_add_ps(_mm256_mul_ps(wv, inp), sum);
         }
 
-        let sum_arr: [f32; 8] = std::mem::zeroed();
-        _mm256_storeu_ps(sum_arr.as_ptr() as *mut _, sum);
+        let mut sum_arr: [f32; 8] = std::mem::zeroed();
+        _mm256_storeu_ps(sum_arr.as_mut_ptr(), sum);
         let mut total = sum_arr.iter().sum::<f32>();
 
         for chunk in (cols8 * 2)..row_bytes {
@@ -112,8 +112,8 @@ unsafe fn mat_vec_mul_neon(weight: &TernaryTensor, input: &[f32], output: &mut [
             sum = vmlaq_f32(sum, w, inp);
         }
 
-        let sum_arr: [f32; 4] = std::mem::zeroed();
-        vst1q_f32(sum_arr.as_ptr() as *mut _, sum);
+        let mut sum_arr: [f32; 4] = std::mem::zeroed();
+        vst1q_f32(sum_arr.as_mut_ptr(), sum);
         let mut total = sum_arr[0] + sum_arr[1] + sum_arr[2] + sum_arr[3];
 
         for col in (cols4 * 4)..in_features {

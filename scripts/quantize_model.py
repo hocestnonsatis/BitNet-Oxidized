@@ -2,32 +2,35 @@
 """
 Quantize a FP32 GGUF model to BitNet (ternary) format.
 
-Usage:
-    python scripts/quantize_model.py \
-        --input models/llama-7b-fp32.gguf \
-        --output models/llama-7b-bitnet.gguf \
-        --method absmax
+For file-to-file quantization, use the Rust CLI:
 
-Requires: bitnet-oxidized GGUF reader/writer (use Rust API or implement reader here).
+    cargo run -- quantize --input <path> --output <path>
+
+This script is a stub that invokes the same; run from the repo root.
 """
 
 import argparse
+import os
+import subprocess
+import sys
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True, help="Input FP32 .gguf path")
+    ap = argparse.ArgumentParser(
+        description="Quantize GGUF to BitNet (ternary). Delegates to cargo run -- quantize."
+    )
+    ap.add_argument("--input", required=True, help="Input .gguf path (F32 or I2_S weights)")
     ap.add_argument("--output", required=True, help="Output BitNet .gguf path")
-    ap.add_argument("--method", default="absmax", choices=["absmax"], help="Quantization method")
+    ap.add_argument("--method", default="absmax", choices=["absmax"], help="Ignored; AbsMax is used")
     args = ap.parse_args()
 
-    print("Quantize: use bitnet-oxidized from Rust:")
-    print("  1. Load FP32 GGUF (if supported) or use create_demo_model() + save_gguf()")
-    print("  2. For in-memory: use bitnet_oxidized::quantization::absmax_quantize()")
-    print("  3. Save with model::gguf::save_gguf()")
-    print(f"  Input: {args.input}, Output: {args.output}, Method: {args.method}")
-    return 0
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cmd = ["cargo", "run", "--", "quantize", "--input", args.input, "--output", args.output]
+    rc = subprocess.call(cmd, cwd=repo)
+    if rc != 0:
+        sys.exit(rc)
+    print(f"Quantized: {args.input} -> {args.output}")
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()

@@ -5,6 +5,7 @@
 use crate::errors::BitNetError;
 use crate::kernels::TernaryTensor;
 use crate::model::{BitNetConfig, BitNetLayer, BitNetModel};
+use crate::quantization::absmax_quantize;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::HashMap;
 use std::fs::File;
@@ -331,18 +332,33 @@ pub fn load_gguf(path: impl AsRef<Path>) -> Result<BitNetModel, BitNetError> {
         Ok(out)
     };
 
+    // Load a weight tensor as TernaryTensor: I2_S from raw bytes, F32 by quantizing on load.
     let get_ternary = |name: &str| -> Result<TernaryTensor, BitNetError> {
         let data = name_to_data
             .get(name)
             .ok_or_else(|| BitNetError::InvalidFormat(format!("missing tensor {}", name)))?;
-        let dims: Vec<usize> = tensor_infos
+        let info = tensor_infos
             .iter()
             .find(|t| t.name == name)
-            .map(|t| t.dimensions.iter().map(|&d| d as usize).collect())
-            .unwrap_or_default();
+            .ok_or_else(|| BitNetError::InvalidFormat(format!("missing tensor info {}", name)))?;
+        let dims: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
         let len: usize = dims.iter().product();
-        TernaryTensor::from_raw(data.clone(), len)
-            .map_err(|e| BitNetError::InvalidFormat(format!("tensor {}: {:?}", name, e)))
+        if info.tensor_type == GGUFTensorType::I2_S as u32 {
+            TernaryTensor::from_raw(data.clone(), len)
+                .map_err(|e| BitNetError::InvalidFormat(format!("tensor {}: {:?}", name, e)))
+        } else if info.tensor_type == GGUFTensorType::F32 as u32 {
+            let mut weights = vec![0f32; len];
+            for (i, chunk) in data.chunks_exact(4).take(len).enumerate() {
+                weights[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            }
+            let (ternary, _scale) = absmax_quantize(&weights, dims);
+            Ok(ternary)
+        } else {
+            Err(BitNetError::InvalidFormat(format!(
+                "tensor {}: unsupported type {} (use F32 or I2_S)",
+                name, info.tensor_type
+            )))
+        }
     };
 
     let embeddings_raw = get_f32("token_embd")?;
