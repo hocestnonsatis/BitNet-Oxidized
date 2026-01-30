@@ -17,7 +17,6 @@ pub fn mat_vec_mul_simd(weight: &TernaryTensor, input: &[f32], output: &mut [f32
     #[cfg(target_arch = "aarch64")]
     {
         unsafe { mat_vec_mul_neon(weight, input, output) };
-        return;
     }
 
     #[cfg(not(target_arch = "aarch64"))]
@@ -79,7 +78,7 @@ unsafe fn mat_vec_mul_avx2(weight: &TernaryTensor, input: &[f32], output: &mut [
 fn decode_byte_lut(byte: u8) -> [f32; 4] {
     let mut w = [0.0f32; 4];
     for pos in 0..4 {
-        let bits = ((byte >> (pos * 2)) & 0b11) as u8;
+        let bits = (byte >> (pos * 2)) & 0b11;
         w[pos] = match bits {
             0b00 => 0.0,
             0b01 => 1.0,
@@ -129,7 +128,7 @@ unsafe fn mat_vec_mul_neon(weight: &TernaryTensor, input: &[f32], output: &mut [
 fn decode_byte_lut_neon(byte: u8) -> std::arch::aarch64::float32x4_t {
     let mut w = [0.0f32; 4];
     for pos in 0..4 {
-        let bits = ((byte >> (pos * 2)) & 0b11) as u8;
+        let bits = (byte >> (pos * 2)) & 0b11;
         w[pos] = match bits {
             0b00 => 0.0,
             0b01 => 1.0,
