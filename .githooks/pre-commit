@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Auto-format Rust code on every commit.
+set -e
+cargo fmt
+# Re-stage any Rust files that were reformatted
+git diff --name-only -- '*.rs' | while read -r f; do [ -n "$f" ] && git add "$f"; done
+git diff --name-only --cached -- '*.rs' | while read -r f; do [ -n "$f" ] && git add "$f"; done
