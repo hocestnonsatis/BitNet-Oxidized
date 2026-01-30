@@ -13,14 +13,15 @@ pub struct KVCache {
 }
 
 impl KVCache {
+    /// Create a KV cache. Uses `num_key_value_heads` for GQA/MQA (smaller cache when num_kv_heads < num_attention_heads).
     pub fn new(config: &BitNetConfig) -> Self {
         let num_layers = config.num_hidden_layers;
-        let num_heads = config.num_attention_heads;
+        let num_kv_heads = config.num_kv_heads();
         let max_len = config.max_position_embeddings;
-        let head_dim = config.hidden_size / num_heads;
+        let head_dim = config.head_dim();
 
-        let keys = vec![vec![vec![vec![0.0f32; head_dim]; max_len]; num_heads]; num_layers];
-        let values = vec![vec![vec![vec![0.0f32; head_dim]; max_len]; num_heads]; num_layers];
+        let keys = vec![vec![vec![vec![0.0f32; head_dim]; max_len]; num_kv_heads]; num_layers];
+        let values = vec![vec![vec![vec![0.0f32; head_dim]; max_len]; num_kv_heads]; num_layers];
 
         Self {
             keys,

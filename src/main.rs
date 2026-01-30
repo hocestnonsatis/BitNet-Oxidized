@@ -263,12 +263,14 @@ fn run_serve(model_path: &std::path::Path, port: u16, batch_size: usize) -> Resu
         max_queue_size: 64,
         timeout_seconds: 30,
     };
+    let telemetry = Some(std::sync::Arc::new(bitnet_oxidized::Telemetry::new()));
     let rt = tokio::runtime::Runtime::new().map_err(|e| anyhow::anyhow!("tokio runtime: {}", e))?;
     rt.block_on(bitnet_oxidized::server::run_server(
         model_path,
         None::<&std::path::Path>,
         port,
         config,
+        telemetry,
     ))
     .map_err(|e| anyhow::anyhow!("server: {}", e))
 }

@@ -2,10 +2,10 @@
 
 use crate::errors::BitNetError;
 use crate::model::gguf;
-use crate::{BitNetTokenizer, TextGenerator};
+use crate::{BitNetTokenizer, Telemetry, TextGenerator};
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{header, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -23,6 +23,7 @@ pub struct ServerState {
     pub generator: Arc<RwLock<TextGenerator>>,
     pub tokenizer: Option<Arc<BitNetTokenizer>>,
     pub config: ServerConfig,
+    pub telemetry: Option<Arc<Telemetry>>,
 }
 
 #[derive(Clone)]
@@ -113,11 +114,13 @@ pub struct MetricsResponse {
 }
 
 /// Run the HTTP server. If tokenizer_path is None or invalid, uses simple word-based tokenization.
+/// If telemetry is Some, /metrics returns Prometheus text format and requests are recorded.
 pub async fn run_server(
     model_path: impl AsRef<Path>,
     tokenizer_path: Option<&Path>,
     port: u16,
     config: ServerConfig,
+    telemetry: Option<Arc<Telemetry>>,
 ) -> Result<(), BitNetError> {
     let model = if model_path.as_ref().exists() {
         gguf::load_gguf(model_path.as_ref())
@@ -136,6 +139,7 @@ pub async fn run_server(
         generator: Arc::new(RwLock::new(generator)),
         tokenizer,
         config,
+        telemetry,
     });
 
     let cors = CorsLayer::new()
@@ -194,6 +198,9 @@ async fn completions(
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     let completion_tokens = output_ids.len().saturating_sub(prompt_ids.len());
     let total_tokens = output_ids.len();
+    if let Some(t) = &state.telemetry {
+        t.record_request(elapsed_ms, completion_tokens);
+    }
     let text = decode_tokens(&state, &output_ids[prompt_ids.len()..]).unwrap_or_else(|_| {
         output_ids
             .iter()
@@ -237,6 +244,9 @@ async fn chat_completions(
 
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     let completion_tokens = output_ids.len().saturating_sub(prompt_ids.len());
+    if let Some(t) = &state.telemetry {
+        t.record_request(elapsed_ms, completion_tokens);
+    }
     let text = decode_tokens(&state, &output_ids[prompt_ids.len()..]).unwrap_or_else(|_| "".into());
 
     Ok(Json(ChatCompletionResponse {
@@ -266,11 +276,17 @@ async fn list_models(State(_state): State<Arc<ServerState>>) -> Json<ModelsListR
     })
 }
 
-async fn metrics(State(_state): State<Arc<ServerState>>) -> Json<MetricsResponse> {
-    Json(MetricsResponse {
-        requests_total: 0,
-        tokens_generated_total: 0,
-    })
+async fn metrics(State(state): State<Arc<ServerState>>) -> impl IntoResponse {
+    if let Some(t) = &state.telemetry {
+        let body = t.export_metrics();
+        ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
+    } else {
+        Json(MetricsResponse {
+            requests_total: 0,
+            tokens_generated_total: 0,
+        })
+        .into_response()
+    }
 }
 
 fn tokenize_prompt(state: &ServerState, prompt: &str) -> Result<Vec<usize>, ApiError> {

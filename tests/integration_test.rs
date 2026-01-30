@@ -3,7 +3,10 @@
 use bitnet_oxidized::kernels::{
     mat_vec_mul_basic, mat_vec_mul_blocked, mat_vec_mul_lut, TernaryTensor,
 };
-use bitnet_oxidized::{create_demo_model, InferenceEngine, TextGenerator};
+use bitnet_oxidized::{
+    create_demo_model, BitNetExpert, InferenceEngine, MoELayer, PrefixCache, SpeculativeDecoder,
+    StructuredGenerator, Telemetry, TextGenerator,
+};
 use rand::Rng;
 
 #[test]
@@ -97,5 +100,91 @@ fn gguf_roundtrip() {
     assert_eq!(loaded.vocab_size(), model.vocab_size());
     assert_eq!(loaded.hidden_size(), model.hidden_size());
     assert_eq!(loaded.num_layers(), model.num_layers());
+    assert_eq!(
+        loaded.config.num_key_value_heads,
+        model.config.num_key_value_heads
+    );
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn speculative_decoding_runs() {
+    let model = create_demo_model();
+    let draft = InferenceEngine::new(model.clone());
+    let target = InferenceEngine::new(model);
+    let decoder = SpeculativeDecoder::new(draft, target, 2).unwrap();
+    let prompt = vec![0usize, 1];
+    let out = decoder.generate_speculative(&prompt, 8).unwrap();
+    assert!(out.len() >= 2 && out.len() <= 8);
+}
+
+#[test]
+fn telemetry_export_prometheus() {
+    let t = Telemetry::new();
+    t.record_request(10.5, 5);
+    t.record_request(25.0, 12);
+    let out = t.export_metrics();
+    assert!(out.contains("bitnet_requests_total 2"));
+    assert!(out.contains("bitnet_tokens_generated_total 17"));
+    assert!(out.contains("bitnet_request_latency_bucket"));
+}
+
+#[test]
+fn moe_layer_forward_runs() {
+    use bitnet_oxidized::kernels::TernaryTensor;
+    let mut rng = rand::thread_rng();
+    let hidden = 64;
+    let intermed = 128;
+    let num_experts = 4;
+    let top_k = 2;
+    fn rand_ternary(rng: &mut impl Rng, n: usize) -> TernaryTensor {
+        let mut t = TernaryTensor::zeros(n);
+        for i in 0..n {
+            let v: i32 = rng.gen_range(-1..=1);
+            t.set(i, v as f32);
+        }
+        t
+    }
+    let gate = rand_ternary(&mut rng, num_experts * hidden);
+    let experts: Vec<BitNetExpert> = (0..num_experts)
+        .map(|_| BitNetExpert {
+            gate_proj: rand_ternary(&mut rng, hidden * intermed),
+            up_proj: rand_ternary(&mut rng, hidden * intermed),
+            down_proj: rand_ternary(&mut rng, intermed * hidden),
+        })
+        .collect();
+    let moe = MoELayer {
+        num_experts,
+        top_k,
+        gate,
+        experts,
+        intermediate_size: intermed,
+        hidden_size: hidden,
+    };
+    let hidden_vec: Vec<f32> = (0..hidden).map(|_| rng.gen()).collect();
+    let out = moe.forward(&hidden_vec).unwrap();
+    assert_eq!(out.len(), hidden);
+}
+
+#[test]
+fn prefix_cache_hit_miss() {
+    let model = create_demo_model();
+    let engine = InferenceEngine::new(model);
+    let mut cache = PrefixCache::new(10);
+    let prefix = vec![0usize, 1, 2];
+    let a1 = cache.get_or_compute(&prefix, &engine).unwrap();
+    let a2 = cache.get_or_compute(&prefix, &engine).unwrap();
+    assert_eq!(a1.kv_cache.current_length(), a2.kv_cache.current_length());
+    assert_eq!(cache.len(), 1);
+    assert!(cache.hit_rate() > 0.0);
+}
+
+#[test]
+fn structured_generator_json_requires_tokenizer() {
+    let model = create_demo_model();
+    let engine = InferenceEngine::new(model);
+    let gen = StructuredGenerator::new(engine, None);
+    let prompt = vec![0usize, 1];
+    let res = gen.generate_json(&prompt, 20);
+    assert!(res.is_err());
 }

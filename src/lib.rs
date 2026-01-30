@@ -13,6 +13,7 @@ pub mod errors;
 pub mod inference;
 pub mod kernels;
 pub mod model;
+pub mod monitoring;
 pub mod quantization;
 pub mod server;
 pub mod tokenizer;
@@ -20,14 +21,18 @@ pub mod utils;
 
 pub use errors::BitNetError;
 pub use inference::{
-    DynamicBatcher, GenerationToken, InferenceEngine, KVCache, StreamGenerator, TextGenerator,
+    CachedActivations, DynamicBatcher, GenerationToken, InferenceEngine, JsonSchema, KVCache,
+    PrefixCache, SpeculativeDecoder, StreamGenerator, StructuredGenerator, TextGenerator,
     EOS_TOKEN,
 };
 pub use kernels::{
     build_lut, mat_vec_mul_basic, mat_vec_mul_blocked, mat_vec_mul_lut, ByteLut, TernaryTensor,
     TernaryTensorError, TernaryWeight,
 };
-pub use model::{create_demo_model, BitNetConfig, BitNetLayer, BitNetModel};
+pub use model::{
+    create_demo_model, BitNetConfig, BitNetExpert, BitNetLayer, BitNetModel, MoELayer,
+};
+pub use monitoring::Telemetry;
 pub use quantization::{absmax_dequantize, absmax_quantize, compute_quantization_error};
 pub use tokenizer::BitNetTokenizer;
 pub use utils::{argmax, perplexity, DetailedMetrics, Profiler};

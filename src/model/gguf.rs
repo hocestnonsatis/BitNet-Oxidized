@@ -218,6 +218,10 @@ fn config_from_metadata(meta: &HashMap<String, GGUFValue>) -> Result<BitNetConfi
         .get("bitnet.attention.head_count")
         .and_then(extract_u64)
         .unwrap_or((embedding_length / 64) as u64) as usize;
+    let key_value_head_count = meta
+        .get("bitnet.attention.key_value_head_count")
+        .and_then(extract_u64)
+        .unwrap_or(head_count as u64) as usize;
     let rms_eps = meta
         .get("bitnet.attention.layer_norm_rms_epsilon")
         .and_then(extract_f32)
@@ -227,6 +231,7 @@ fn config_from_metadata(meta: &HashMap<String, GGUFValue>) -> Result<BitNetConfi
         vocab_size,
         hidden_size: embedding_length,
         num_attention_heads: head_count,
+        num_key_value_heads: key_value_head_count,
         num_hidden_layers: block_count,
         intermediate_size: feed_forward_length,
         max_position_embeddings: context_length,
@@ -483,6 +488,10 @@ pub fn save_gguf(model: &BitNetModel, path: impl AsRef<Path>) -> Result<(), BitN
         (
             "bitnet.attention.head_count".into(),
             GGUFValue::UInt32(config.num_attention_heads as u32),
+        ),
+        (
+            "bitnet.attention.key_value_head_count".into(),
+            GGUFValue::UInt32(config.num_key_value_heads as u32),
         ),
         (
             "bitnet.attention.layer_norm_rms_epsilon".into(),
