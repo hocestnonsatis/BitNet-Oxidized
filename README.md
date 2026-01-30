@@ -110,11 +110,10 @@ cargo run -- profile --model /path/to/model.gguf --iterations 100
 
 ### Git hook: auto-format on commit
 
-A pre-commit hook runs `cargo fmt` and re-stages changed `.rs` files so every commit is formatted. Enable it once:
+A pre-commit hook runs `cargo fmt` and re-stages changed `.rs` files so every commit is formatted. Install it once (no git config needed):
 
 ```bash
-git config core.hooksPath .githooks
-chmod +x .githooks/pre-commit
+./scripts/setup-git-hooks.sh
 ```
 
 ## License

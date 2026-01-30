@@ -156,9 +156,16 @@ fn run_infer(
     let (prompt_ids, output_text) = if let Some(tok_path) = tokenizer_path {
         let tok = bitnet_oxidized::BitNetTokenizer::from_file(tok_path)
             .map_err(|e| anyhow::anyhow!("tokenizer: {}", e))?;
-        let ids = tok.encode(prompt).map_err(|e| anyhow::anyhow!("encode: {}", e))?;
+        let ids = tok
+            .encode(prompt)
+            .map_err(|e| anyhow::anyhow!("encode: {}", e))?;
         let decode = move |ids: &[usize]| {
-            tok.decode(ids).unwrap_or_else(|_| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" "))
+            tok.decode(ids).unwrap_or_else(|_| {
+                ids.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
         };
         (ids, Some(decode))
     } else {
