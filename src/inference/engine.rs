@@ -79,8 +79,8 @@ impl InferenceEngine {
             hidden = self.forward_layer(&hidden, layer);
         }
 
-        for t in 0..hidden.len() {
-            let mut out_hidden = hidden[t].to_vec();
+        for h in &hidden {
+            let mut out_hidden = h.to_vec();
             self.apply_rms_norm(&mut out_hidden, &self.model.norm);
             let mut logits = vec![0.0f32; vocab_size];
             mat_vec_mul_simd(&self.model.lm_head, &out_hidden, &mut logits);

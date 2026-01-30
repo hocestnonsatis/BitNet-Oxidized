@@ -17,8 +17,8 @@ pub fn flash_attention_forward(
     let block_size = block_size.min(seq_len).max(1);
 
     let mut out = vec![vec![0.0f32; hidden_size]; seq_len];
-    let num_q_blocks = (seq_len + block_size - 1) / block_size;
-    let num_kv_blocks = (seq_len + block_size - 1) / block_size;
+    let num_q_blocks = seq_len.div_ceil(block_size);
+    let num_kv_blocks = seq_len.div_ceil(block_size);
 
     for h in 0..num_heads {
         let q_off = h * head_dim;
@@ -45,10 +45,10 @@ pub fn flash_attention_forward(
                     let mut p_vals: Vec<f32> = Vec::with_capacity(row_end - row_start);
                     let mut o_block = vec![0.0f32; head_dim];
 
-                    for s in row_start..row_end {
+                    for k_row in k[row_start..row_end].iter() {
                         let mut score = 0.0f32;
                         for d in 0..head_dim {
-                            score += q[t][q_off + d] * k[s][q_off + d];
+                            score += q[t][q_off + d] * k_row[q_off + d];
                         }
                         let score = score * scale;
                         m_block = m_block.max(score);

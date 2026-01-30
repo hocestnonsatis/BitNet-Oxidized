@@ -23,7 +23,7 @@ impl SpeculativeDecoder {
         Ok(Self {
             draft_engine,
             target_engine,
-            num_speculative_tokens: num_speculative_tokens,
+            num_speculative_tokens,
         })
     }
 

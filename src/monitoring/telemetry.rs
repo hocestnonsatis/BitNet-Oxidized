@@ -63,17 +63,17 @@ impl Telemetry {
         out.push_str("# HELP bitnet_requests_total Total number of inference requests.\n");
         out.push_str("# TYPE bitnet_requests_total counter\n");
         out.push_str(&format!("bitnet_requests_total {}", requests));
-        out.push_str("\n");
+        out.push('\n');
 
         out.push_str("# HELP bitnet_tokens_generated_total Total tokens generated.\n");
         out.push_str("# TYPE bitnet_tokens_generated_total counter\n");
         out.push_str(&format!("bitnet_tokens_generated_total {}", tokens));
-        out.push_str("\n");
+        out.push('\n');
 
         out.push_str("# HELP bitnet_errors_total Total errors.\n");
         out.push_str("# TYPE bitnet_errors_total counter\n");
         out.push_str(&format!("bitnet_errors_total {}", errors));
-        out.push_str("\n");
+        out.push('\n');
 
         out.push_str("# HELP bitnet_request_latency_ms_sum Sum of request latencies in ms.\n");
         out.push_str("# TYPE bitnet_request_latency_ms_sum counter\n");
@@ -81,7 +81,7 @@ impl Telemetry {
             "bitnet_request_latency_ms_sum {}",
             sum_ms as f64 / 1000.0
         ));
-        out.push_str("\n");
+        out.push('\n');
 
         out.push_str(
             "# HELP bitnet_request_latency_bucket Request latency histogram buckets (ms).\n",
@@ -100,12 +100,12 @@ impl Telemetry {
         }
         out.push_str("bitnet_request_latency_bucket{le=\"+Inf\"} ");
         out.push_str(&requests.to_string());
-        out.push_str("\n");
+        out.push('\n');
 
         out.push_str("# HELP bitnet_cache_hit_rate KV cache hit rate 0..1.\n");
         out.push_str("# TYPE bitnet_cache_hit_rate gauge\n");
         out.push_str(&format!("bitnet_cache_hit_rate {}", cache_rate));
-        out.push_str("\n");
+        out.push('\n');
 
         out
     }
