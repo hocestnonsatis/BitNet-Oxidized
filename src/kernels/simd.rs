@@ -2,23 +2,25 @@
 
 #![allow(clippy::needless_range_loop)]
 
+#[cfg(not(target_arch = "aarch64"))]
 use super::cpu::mat_vec_mul_lut;
 use super::ternary::TernaryTensor;
 
 /// SIMD mat-vec: use AVX2 on x86_64, NEON on aarch64, else LUT.
 pub fn mat_vec_mul_simd(weight: &TernaryTensor, input: &[f32], output: &mut [f32]) {
     #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            return unsafe { mat_vec_mul_avx2(weight, input, output) };
-        }
+    if is_x86_feature_detected!("avx2") {
+        unsafe { mat_vec_mul_avx2(weight, input, output) };
+        return;
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        return unsafe { mat_vec_mul_neon(weight, input, output) };
+        unsafe { mat_vec_mul_neon(weight, input, output) };
+        return;
     }
 
+    #[cfg(not(target_arch = "aarch64"))]
     mat_vec_mul_lut(weight, input, output);
 }
 
@@ -124,7 +126,7 @@ unsafe fn mat_vec_mul_neon(weight: &TernaryTensor, input: &[f32], output: &mut [
 
 #[cfg(target_arch = "aarch64")]
 #[inline]
-fn decode_byte_lut_neon(byte: u8) -> float32x4_t {
+fn decode_byte_lut_neon(byte: u8) -> std::arch::aarch64::float32x4_t {
     let mut w = [0.0f32; 4];
     for pos in 0..4 {
         let bits = ((byte >> (pos * 2)) & 0b11) as u8;
@@ -135,5 +137,5 @@ fn decode_byte_lut_neon(byte: u8) -> float32x4_t {
             _ => 0.0,
         };
     }
-    vld1q_f32(w.as_ptr())
+    unsafe { std::arch::aarch64::vld1q_f32(w.as_ptr()) }
 }
