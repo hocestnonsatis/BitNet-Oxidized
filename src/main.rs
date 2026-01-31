@@ -1,9 +1,14 @@
 //! CLI for bitnet-oxidized: demo, infer, info, bench, chat, serve, profile, quantize.
 
 use anyhow::Result;
-use bitnet_oxidized::{create_demo_model, InferenceEngine, TextGenerator};
+use bitnet_oxidized::{
+    create_demo_model,
+    model::{from_pretrained, ModelRegistry},
+    validation::{validate_model, validate_model_from_path},
+    InferenceEngine, TextGenerator,
+};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::info;
 
@@ -11,6 +16,10 @@ use tracing::info;
 #[command(name = "bitnet-oxidized")]
 #[command(about = "1-bit LLM inference in Rust")]
 struct Cli {
+    /// Run model validation before the chosen operation (or with Validate command).
+    #[arg(long, global = true)]
+    validate: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -20,10 +29,10 @@ enum Commands {
     /// Run with a demo model (random small model)
     Demo,
 
-    /// Run inference: --model <path> --prompt <text> [--tokenizer <path> for decoded text]
+    /// Run inference: --model <name or path> --prompt <text> (e.g. demo or path/to/model.gguf)
     Infer {
         #[arg(long)]
-        model: PathBuf,
+        model: String,
         #[arg(long)]
         prompt: String,
         #[arg(long, default_value = "50")]
@@ -35,19 +44,19 @@ enum Commands {
     /// Show model information
     Info {
         #[arg(long)]
-        model: PathBuf,
+        model: String,
     },
 
     /// Run benchmarks
     Bench {
         #[arg(long)]
-        model: PathBuf,
+        model: String,
     },
 
     /// Interactive chat mode
     Chat {
         #[arg(short, long)]
-        model: PathBuf,
+        model: String,
         #[arg(long)]
         tokenizer: Option<PathBuf>,
         #[arg(short, long, default_value = "0.7")]
@@ -74,7 +83,7 @@ enum Commands {
     /// Server mode (HTTP API)
     Serve {
         #[arg(short, long)]
-        model: PathBuf,
+        model: String,
         #[arg(short, long, default_value = "8080")]
         port: u16,
         #[arg(long, default_value = "4")]
@@ -84,7 +93,7 @@ enum Commands {
     /// Profile model performance
     Profile {
         #[arg(short, long)]
-        model: PathBuf,
+        model: String,
         #[arg(long, default_value = "100")]
         iterations: usize,
     },
@@ -104,6 +113,44 @@ enum Commands {
         #[arg(short, long)]
         text: String,
     },
+
+    /// Run full validation suite on a model and exit (report to stdout unless --output).
+    Validate {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Convert model to GGUF (safetensors→GGUF; use Python script for Hugging Face).
+    Convert {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        /// Output ternary (I2_S) weights
+        #[arg(long, default_value = "true")]
+        format_i2s: bool,
+    },
+
+    /// Repair GGUF: re-save with correct alignment and v3.
+    Repair {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+
+    /// Inspect GGUF file: metadata and tensor list.
+    Inspect {
+        #[arg(long)]
+        model: PathBuf,
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// List registered models (demo + BITNET_REGISTRY / BITNET_MODEL_*)
+    Models,
 }
 
 fn main() -> Result<()> {
@@ -114,7 +161,16 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    if cli.validate {
+        run_validate_if_requested(&cli)?;
+    }
+
     match cli.command {
+        Commands::Validate { model, output } => {
+            run_validate(&model, output.as_deref())?;
+            return Ok(());
+        }
         Commands::Demo => run_demo()?,
         Commands::Infer {
             model,
@@ -179,6 +235,141 @@ fn main() -> Result<()> {
         Commands::Profile { model, iterations } => run_profile(&model, iterations)?,
         Commands::Quantize { input, output } => run_quantize(&input, &output)?,
         Commands::TestTokenizer { tokenizer, text } => run_test_tokenizer(&tokenizer, &text)?,
+        Commands::Convert {
+            input,
+            output,
+            format_i2s,
+        } => run_convert(&input, &output, format_i2s)?,
+        Commands::Repair { model, output } => run_repair(&model, &output)?,
+        Commands::Inspect { model, verbose } => run_inspect(&model, verbose)?,
+        Commands::Models => run_models()?,
+    }
+    Ok(())
+}
+
+fn get_registry() -> ModelRegistry {
+    let mut r = ModelRegistry::default_registry();
+    r.load_from_env();
+    r
+}
+
+fn load_model_from_name_or_path(name_or_path: &str) -> Result<bitnet_oxidized::BitNetModel> {
+    from_pretrained(name_or_path, &get_registry()).map_err(Into::into)
+}
+
+fn run_models() -> Result<()> {
+    let reg = get_registry();
+    let mut names = reg.names();
+    names.sort();
+    println!("Registered models:");
+    for n in &names {
+        if let Some(e) = reg.get(n) {
+            let desc = e.description.as_deref().unwrap_or("").trim();
+            let path_str = e
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(in-memory)".to_string());
+            if desc.is_empty() {
+                println!("  {}  {}", n, path_str);
+            } else {
+                println!("  {}  {}  # {}", n, path_str, desc);
+            }
+        }
+    }
+    println!("\nUse --model <name> or --model <path/to/model.gguf> with infer, chat, serve, etc.");
+    Ok(())
+}
+
+fn run_validate_if_requested(cli: &Cli) -> Result<()> {
+    match &cli.command {
+        Commands::Validate { .. } => return Ok(()),
+        Commands::Demo => {
+            let model = create_demo_model();
+            let report = validate_model(&model)?;
+            if !report.passed {
+                eprintln!(
+                    "Validation failed (demo model): {:?}",
+                    report.gguf_load.errors
+                );
+                std::process::exit(1);
+            }
+            info!("Pre-run validation (demo) passed.");
+        }
+        Commands::Infer { model, .. }
+        | Commands::Info { model, .. }
+        | Commands::Bench { model, .. }
+        | Commands::Chat { model, .. }
+        | Commands::Serve { model, .. }
+        | Commands::Profile { model, .. } => {
+            if Path::new(model).exists() && Path::new(model).is_file() {
+                let report = validate_model_from_path(Path::new(model))?;
+                if !report.passed {
+                    eprintln!("Validation failed: {:?}", report.gguf_load.errors);
+                    std::process::exit(1);
+                }
+                info!("Pre-run validation passed.");
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn run_validate(model_path: &std::path::Path, output: Option<&std::path::Path>) -> Result<()> {
+    let report = validate_model_from_path(model_path)?;
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(p) = output {
+        std::fs::write(p, &json)?;
+        println!("Validation report written to {}", p.display());
+    } else {
+        println!("{}", json);
+    }
+    if !report.passed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn run_convert(input: &std::path::Path, output: &std::path::Path, format_i2s: bool) -> Result<()> {
+    bitnet_oxidized::convert_safetensors_to_gguf(input, output, format_i2s)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Converted {} -> {}", input.display(), output.display());
+    Ok(())
+}
+
+fn run_repair(model_path: &std::path::Path, output: &std::path::Path) -> Result<()> {
+    bitnet_oxidized::repair_gguf(model_path, output).map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Repaired {} -> {}", model_path.display(), output.display());
+    Ok(())
+}
+
+fn run_inspect(model_path: &std::path::Path, verbose: bool) -> Result<()> {
+    let info = bitnet_oxidized::inspect_gguf(model_path).map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("GGUF version: {}", info.version);
+    println!("Alignment OK: {}", info.alignment_ok);
+    if !info.alignment_errors.is_empty() {
+        for e in &info.alignment_errors {
+            println!("  alignment: {}", e);
+        }
+    }
+    println!("\nMetadata ({} keys):", info.metadata.len());
+    let mut keys: Vec<_> = info.metadata.keys().collect();
+    keys.sort();
+    for k in keys {
+        let v = info.metadata.get(k).unwrap();
+        println!("  {} = {}", k, v);
+    }
+    println!("\nTensors ({}):", info.tensors.len());
+    for t in &info.tensors {
+        if verbose {
+            println!(
+                "  {}  dims={:?}  type={}  offset={}  n_elements={}",
+                t.name, t.dimensions, t.type_name, t.offset, t.n_elements
+            );
+        } else {
+            println!("  {}  {:?}  {}", t.name, t.dimensions, t.type_name);
+        }
     }
     Ok(())
 }
@@ -213,13 +404,13 @@ fn run_demo() -> Result<()> {
 }
 
 fn run_infer(
-    model_path: &std::path::Path,
+    model_name_or_path: &str,
     prompt: &str,
     max_tokens: usize,
     tokenizer_path: Option<&std::path::Path>,
 ) -> Result<()> {
-    info!("Loading model from {:?}...", model_path);
-    let model = bitnet_oxidized::model::gguf::load_gguf(model_path)?;
+    info!("Loading model '{}'...", model_name_or_path);
+    let model = load_model_from_name_or_path(model_name_or_path)?;
     let gen = TextGenerator::new(model);
     let (prompt_ids, output_text) = if let Some(tok_path) = tokenizer_path {
         let tok = bitnet_oxidized::BitNetTokenizer::from_file(tok_path)
@@ -251,17 +442,17 @@ fn run_infer(
     Ok(())
 }
 
-fn run_info(model_path: &std::path::Path) -> Result<()> {
-    let model = bitnet_oxidized::model::gguf::load_gguf(model_path)?;
+fn run_info(model_name_or_path: &str) -> Result<()> {
+    let model = load_model_from_name_or_path(model_name_or_path)?;
     println!("vocab_size: {}", model.vocab_size());
     println!("hidden_size: {}", model.hidden_size());
     println!("num_layers: {}", model.num_layers());
     Ok(())
 }
 
-fn run_bench(model_path: &std::path::Path) -> Result<()> {
-    info!("Loading model from {:?}...", model_path);
-    let model = bitnet_oxidized::model::gguf::load_gguf(model_path)?;
+fn run_bench(model_name_or_path: &str) -> Result<()> {
+    info!("Loading model '{}'...", model_name_or_path);
+    let model = load_model_from_name_or_path(model_name_or_path)?;
     let engine = InferenceEngine::new(model);
     let input = vec![0usize];
     let warmup = 5;
@@ -280,19 +471,14 @@ fn run_bench(model_path: &std::path::Path) -> Result<()> {
 }
 
 fn run_chat(
-    model_path: &std::path::Path,
+    model_name_or_path: &str,
     tokenizer_path: Option<&std::path::Path>,
     config: bitnet_oxidized::GenerationConfig,
     _system_prompt: Option<&str>,
     debug: bool,
 ) -> Result<()> {
-    info!("Loading model from {:?}...", model_path);
-    let model = if model_path.exists() {
-        bitnet_oxidized::model::gguf::load_gguf(model_path)?
-    } else {
-        info!("Model file not found, using demo model");
-        create_demo_model()
-    };
+    info!("Loading model '{}'...", model_name_or_path);
+    let model = load_model_from_name_or_path(model_name_or_path)?;
     let tokenizer = tokenizer_path
         .map(bitnet_oxidized::BitNetTokenizer::from_file)
         .transpose()
@@ -390,7 +576,7 @@ fn run_chat(
     Ok(())
 }
 
-fn run_serve(model_path: &std::path::Path, port: u16, batch_size: usize) -> Result<()> {
+fn run_serve(model_name_or_path: &str, port: u16, batch_size: usize) -> Result<()> {
     let config = bitnet_oxidized::server::ServerConfig {
         max_batch_size: batch_size,
         max_queue_size: 64,
@@ -398,8 +584,9 @@ fn run_serve(model_path: &std::path::Path, port: u16, batch_size: usize) -> Resu
     };
     let telemetry = Some(std::sync::Arc::new(bitnet_oxidized::Telemetry::new()));
     let rt = tokio::runtime::Runtime::new().map_err(|e| anyhow::anyhow!("tokio runtime: {}", e))?;
-    rt.block_on(bitnet_oxidized::server::run_server(
-        model_path,
+    rt.block_on(bitnet_oxidized::server::run_server_with_registry(
+        model_name_or_path,
+        &get_registry(),
         None::<&std::path::Path>,
         port,
         config,
@@ -408,13 +595,9 @@ fn run_serve(model_path: &std::path::Path, port: u16, batch_size: usize) -> Resu
     .map_err(|e| anyhow::anyhow!("server: {}", e))
 }
 
-fn run_profile(model_path: &std::path::Path, iterations: usize) -> Result<()> {
-    info!("Loading model from {:?}...", model_path);
-    let model = if model_path.exists() {
-        bitnet_oxidized::model::gguf::load_gguf(model_path)?
-    } else {
-        create_demo_model()
-    };
+fn run_profile(model_name_or_path: &str, iterations: usize) -> Result<()> {
+    info!("Loading model '{}'...", model_name_or_path);
+    let model = load_model_from_name_or_path(model_name_or_path)?;
     let engine = InferenceEngine::new(model);
     let input = vec![0usize];
     let warmup = 5;

@@ -38,3 +38,7 @@ harness = false
 [[bench]]
 name = "e2e_benchmark"
 harness = false
+
+[[bench]]
+name = "kernel_comparison"
+harness = false

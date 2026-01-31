@@ -12,15 +12,19 @@ This is a research-oriented implementation. It is not production-hardened and do
 ## What's implemented
 
 - **Ternary weights**: 2-bit packing (4 weights per byte) with values `{-1, 0, +1}` (~16× smaller than FP32).
-- **CPU mat-vec kernels**: basic (parallel dot product), blocked (4-wide unrolling), and **LUT-based** (typically 2–5× faster than basic). The inference engine uses the **SIMD** path by default (AVX2 on x86_64, NEON on aarch64), with LUT fallback when SIMD is unavailable.
+- **CPU mat-vec kernels**: basic, blocked, **LUT**, and **SIMD** (AVX2/NEON). **Kernel autotuning**: `best_kernel_for_size()` with cache; override via `BITNET_KERNEL_OVERRIDE=basic|blocked|lut|simd`.
 - **BitNet transformer**: Pre-norm attention and FFN with ternary projections and full-precision RMS LayerNorm.
-- **Inference**: Forward pass and text generation (greedy, top-k, top-p). Generation uses an integrated **KV cache**: one forward step per token (no full-sequence recompute).
-- **GGUF**: Load and save BitNet models in GGUF v3 format (F32 + custom 2-bit tensor type).
-- **Tokenizer**: Optional tokenizer from file (via the `tokenizers` crate) for `infer` and `chat`; otherwise a naive whitespace/hash tokenizer is used.
-- **Quantization**: AbsMax-style FP32 → ternary conversion and error metrics. CLI `quantize --input <path> --output <path>` loads a GGUF (F32 or I2_S) and saves a BitNet GGUF (ternary). In-memory workflow in `examples/quantize_model.rs`.
-- **CLI**: `demo`, `infer`, `info`, `bench`, `chat`, `serve`, `profile`, `quantize`, `test-tokenizer`. `chat` and `profile` can fall back to the built-in demo model if no GGUF path is provided or the file is missing.
-- **HTTP server**: `serve` runs an Axum-based API for inference (prompt completion and chat-style endpoints). See [docs/deployment_guide.md](docs/deployment_guide.md) for deployment options.
-- **Errors and profiling**: `BitNetError` and `Profiler` / `DetailedMetrics` for diagnostics.
+- **Inference**: Forward pass and text generation (greedy, top-k, top-p). **Advanced sampling**: Mirostat, locally-typical, contrastive, min-p; **logit processors** (temperature, repetition/top-k/top-p, bad words, frequency penalty); **constraints** (lexical, allowed tokens); **GenerationPipeline** with configurable strategy.
+- **KV cache**: One forward step per token; prefix cache and speculative decoding support.
+- **GGUF**: Load/save in GGUF v2/v3; **inspect** (metadata/tensors), **repair** (re-save v3, alignment). Stub **convert** (safetensors→GGUF; use Python scripts for Hugging Face).
+- **Model zoo**: **Registry** and **from_pretrained(name_or_path)**: `"demo"` or file path or registered name. Env: `BITNET_REGISTRY` (JSON), `BITNET_MODEL_<NAME>=/path`. CLI **models** lists registered models; **infer**, **chat**, **serve**, **profile**, **info**, **bench** accept `--model <name or path>`.
+- **Validation**: Full suite (GGUF load, forward pass, attention); CLI **validate** and global **--validate**; layer tracer and Chrome trace export for debugging.
+- **Profiling**: Per-layer timing, FLOPS estimate, Chrome trace export; **profile_inference** example; **memory pool** for reusable f32 buffers.
+- **Tokenizer**: Optional tokenizer from file for `infer`/`chat`; otherwise naive tokenizer.
+- **Quantization**: AbsMax FP32→ternary; CLI **quantize**.
+- **CLI**: `demo`, `infer`, `info`, `bench`, `chat`, `serve`, `profile`, `quantize`, `test-tokenizer`, **validate**, **convert**, **repair**, **inspect**, **models**.
+- **HTTP server**: Axum API (completions, chat, health, metrics). See [docs/deployment_guide.md](docs/deployment_guide.md).
+- **Errors and profiling**: `BitNetError`, `Profiler`, `DetailedMetrics`, `InferenceProfiler`.
 
 ---
 
@@ -40,17 +44,21 @@ This is a research-oriented implementation. It is not production-hardened and do
 bitnet-oxidized/
 ├── src/
 │   ├── kernels/      # Ternary tensor, basic/blocked/LUT mat-vec, SIMD
-│   ├── model/        # BitNet config, layers, demo, GGUF load/save
-│   ├── inference/    # Engine, generator, KV cache, streaming
+│   ├── model/        # BitNet config, layers, demo, GGUF load/save, registry
+│   ├── inference/    # Engine, generator, KV cache, sampling, pipeline, streaming
+│   ├── optimization/ # Kernel autotuning (best_kernel_for_size)
+│   ├── profiling/    # InferenceProfiler, Chrome trace
+│   ├── validation/   # GGUF/forward/attention validation
+│   ├── debugging/    # Layer tracer
 │   ├── quantization/# AbsMax quantize/dequantize
 │   ├── server/       # HTTP API
 │   ├── tokenizer/   # BitNetTokenizer wrapper
-│   └── utils/       # Metrics (perplexity, argmax), profiler
-├── examples/        # basic_inference, benchmark, quantize_model, debug_chat
-├── benches/         # Criterion kernel + e2e benchmarks
-├── scripts/         # convert_huggingface_to_gguf.py, download_hf_model.py, etc.
-├── tests/           # Integration tests
-├── docs/            # deployment_guide, model_card, termux_and_phones
+│   └── utils/       # Metrics, profiler, memory_pool
+├── examples/        # basic_inference, benchmark, quantize_model, validate_model, profile_inference, advanced_generation
+├── benches/         # Criterion kernel + e2e + kernel_comparison
+├── scripts/         # convert_huggingface_to_gguf.py, download_and_convert.py, etc.
+├── tests/           # Integration + reference_comparison
+├── docs/            # deployment_guide, model_card, termux_and_phones, TODO
 └── models/          # Model configs and instructions (see models/README.md)
 ```
 
@@ -62,11 +70,20 @@ bitnet-oxidized/
 # Demo (small random model, no file needed)
 cargo run -- demo
 
+# Inference by name or path (demo = built-in model)
+cargo run -- infer --model demo --prompt "hello" --max-tokens 10
+
+# List registered models
+cargo run -- models
+
 # Basic inference example
 cargo run --example basic_inference
 
 # Compare kernel performance
 cargo run --example benchmark
+
+# Profile inference (per-layer timing, optional Chrome trace)
+cargo run --example profile_inference -- --trace trace.json
 
 # In-memory quantize (FP32 → ternary)
 cargo run --example quantize_model
@@ -85,12 +102,17 @@ cargo bench
 | Command | Description |
 |--------|-------------|
 | `cargo run -- demo` | Run with built-in demo model (no file). |
-| `cargo run -- infer --model <path> --prompt <text>` | Run inference. Optional: `--tokenizer <path>`, `--max-tokens <n>` (default: 50). |
-| `cargo run -- info --model <path>` | Print model info (vocab_size, hidden_size, num_layers). |
-| `cargo run -- bench --model <path>` | Benchmark forward pass. |
-| `cargo run -- chat --model <path>` | Interactive chat. Omit or use missing path for demo model. Optional: `--tokenizer <path>`, `--temperature <f>` (default 0.7), `--top-p <f>` (0.9), `--top-k <n>` (50), `--repetition-penalty <f>` (1.2), `--frequency-penalty`, `--presence-penalty`, `--system-prompt <s>`, `--debug`, `--greedy`. |
-| `cargo run -- serve --model <path>` | HTTP API. Optional: `--port <port>` (default 8080), `--batch-size <n>` (default 4). |
-| `cargo run -- profile --model <path>` | Profile forward pass. Optional: `--iterations <n>` (default 100). |
+| `cargo run -- models` | List registered models (demo + env `BITNET_REGISTRY` / `BITNET_MODEL_*`). |
+| `cargo run -- infer --model <name or path> --prompt <text>` | Run inference. Use `demo` or a GGUF path. Optional: `--tokenizer <path>`, `--max-tokens <n>` (default: 50). |
+| `cargo run -- info --model <name or path>` | Print model info (vocab_size, hidden_size, num_layers). |
+| `cargo run -- bench --model <name or path>` | Benchmark forward pass. |
+| `cargo run -- chat --model <name or path>` | Interactive chat. Optional: `--tokenizer <path>`, `--temperature`, `--top-p`, `--top-k`, `--repetition-penalty`, `--frequency-penalty`, `--presence-penalty`, `--system-prompt`, `--debug`, `--greedy`. |
+| `cargo run -- serve --model <name or path>` | HTTP API. Optional: `--port` (default 8080), `--batch-size` (default 4). |
+| `cargo run -- profile --model <name or path>` | Profile forward pass. Optional: `--iterations` (default 100). |
+| `cargo run -- validate --model <path> [--output <path>]` | Run full validation suite; report to stdout or JSON file. |
+| `cargo run -- convert --input <path> --output <path>` | Stub: convert to GGUF (use Python scripts for HF). |
+| `cargo run -- repair --model <path> --output <path>` | Repair GGUF (re-save v3, alignment). |
+| `cargo run -- inspect --model <path> [--verbose]` | Inspect GGUF metadata and tensors. |
 | `cargo run -- quantize --input <path> --output <path>` | Load GGUF (F32 or ternary) and save BitNet GGUF (ternary). |
 | `cargo run -- test-tokenizer --tokenizer <path> --text <s>` | Test tokenizer: encode/decode and vocab check. |
 
@@ -125,6 +147,7 @@ cargo run --release -- infer --model models/bitnet_b1_58-large.gguf \
 - [docs/deployment_guide.md](docs/deployment_guide.md) — Deploying the HTTP server and usage.
 - [docs/model_card.md](docs/model_card.md) — Model card and capabilities.
 - [docs/termux_and_phones.md](docs/termux_and_phones.md) — Running on Termux and phones.
+- [docs/TODO.md](docs/TODO.md) — Remaining tasks (Gradio/UI, K8s/health, tests, vision, sharding).
 
 ---
 

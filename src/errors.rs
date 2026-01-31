@@ -4,6 +4,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum BitNetError {
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("Invalid model format: {0}")]
     InvalidFormat(String),
 

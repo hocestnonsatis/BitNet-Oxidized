@@ -18,7 +18,7 @@ fn ternary_tensor_pack_unpack() {
     assert_eq!(t.get(0), 1.0);
     assert_eq!(t.get(1), -1.0);
     assert_eq!(t.get(2), 0.0);
-    assert_eq!(t.memory_usage(), (20 + 3) / 4);
+    assert_eq!(t.memory_usage(), 20_usize.div_ceil(4));
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn generate_top_k_runs() {
     let gen = TextGenerator::new(model);
     let prompt = vec![0usize];
     let out = gen.generate_top_k(&prompt, 5, 10, 0.8).unwrap();
-    assert!(out.len() >= 1 && out.len() <= 5);
+    assert!(!out.is_empty() && out.len() <= 5);
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn generate_top_p_runs() {
     let gen = TextGenerator::new(model);
     let prompt = vec![0usize];
     let out = gen.generate_top_p(&prompt, 5, 0.9, 0.8, None, 1.0).unwrap();
-    assert!(out.len() >= 1 && out.len() <= 5);
+    assert!(!out.is_empty() && out.len() <= 5);
 }
 
 #[test]
@@ -104,6 +104,35 @@ fn gguf_roundtrip() {
         loaded.config.num_key_value_heads,
         model.config.num_key_value_heads
     );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn repair_gguf_roundtrip() {
+    let model = create_demo_model();
+    let path_a = std::env::temp_dir().join("bitnet_repair_a.gguf");
+    let path_b = std::env::temp_dir().join("bitnet_repair_b.gguf");
+    bitnet_oxidized::model::gguf::save_gguf(&model, &path_a).unwrap();
+    bitnet_oxidized::repair_gguf(&path_a, &path_b).unwrap();
+    let loaded = bitnet_oxidized::model::gguf::load_gguf(&path_b).unwrap();
+    assert_eq!(loaded.vocab_size(), model.vocab_size());
+    assert_eq!(loaded.hidden_size(), model.hidden_size());
+    assert_eq!(loaded.num_layers(), model.num_layers());
+    let _ = std::fs::remove_file(&path_a);
+    let _ = std::fs::remove_file(&path_b);
+}
+
+#[test]
+fn inspect_gguf_returns_metadata() {
+    let model = create_demo_model();
+    let path = std::env::temp_dir().join("bitnet_inspect.gguf");
+    bitnet_oxidized::model::gguf::save_gguf(&model, &path).unwrap();
+    let info = bitnet_oxidized::inspect_gguf(&path).unwrap();
+    assert!(info.version == 2 || info.version == 3);
+    assert!(info.metadata.contains_key("general.architecture"));
+    assert_eq!(info.metadata.get("general.architecture").unwrap(), "bitnet");
+    assert!(!info.tensors.is_empty());
+    assert!(info.tensors.iter().any(|t| t.name == "token_embd"));
     let _ = std::fs::remove_file(&path);
 }
 

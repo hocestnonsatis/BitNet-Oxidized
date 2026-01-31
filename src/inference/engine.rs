@@ -150,7 +150,7 @@ impl InferenceEngine {
     }
 
     /// Embed a single token to hidden state [hidden_size].
-    fn embed_one_token(&self, token_id: usize) -> Vec<f32> {
+    pub fn embed_one_token(&self, token_id: usize) -> Vec<f32> {
         let vocab_size = self.model.vocab_size();
         let id = token_id.min(vocab_size.saturating_sub(1));
         self.model.embeddings[id].clone()

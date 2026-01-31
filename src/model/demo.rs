@@ -2,7 +2,8 @@
 
 use super::{BitNetConfig, BitNetLayer, BitNetModel};
 use crate::kernels::{TernaryTensor, TernaryWeight};
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 fn rand_ternary(rng: &mut impl Rng, n: usize) -> TernaryTensor {
     let mut t = TernaryTensor::zeros(n);
@@ -26,7 +27,12 @@ fn rand_f32_vec(rng: &mut impl Rng, n: usize) -> Vec<f32> {
 
 /// Create a small demo model with random ternary weights for testing/demo.
 pub fn create_demo_model() -> BitNetModel {
-    let mut rng = rand::thread_rng();
+    create_demo_model_seeded(rand::random::<u64>())
+}
+
+/// Create a deterministic demo model from a seed (for tests and golden outputs).
+pub fn create_demo_model_seeded(seed: u64) -> BitNetModel {
+    let mut rng = StdRng::seed_from_u64(seed);
     let config = BitNetConfig {
         vocab_size: 256,
         hidden_size: 64,

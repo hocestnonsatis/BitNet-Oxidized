@@ -1,7 +1,7 @@
 //! HTTP API server for BitNet-Oxidized inference.
 
 use crate::errors::BitNetError;
-use crate::model::gguf;
+use crate::model::{from_pretrained, gguf, ModelRegistry};
 use crate::{BitNetTokenizer, Telemetry, TextGenerator};
 use axum::{
     extract::State,
@@ -113,7 +113,54 @@ pub struct MetricsResponse {
     pub tokens_generated_total: u64,
 }
 
-/// Run the HTTP server. If tokenizer_path is None or invalid, uses simple word-based tokenization.
+/// Run the HTTP server by model name or path (registry). If tokenizer_path is None or invalid,
+/// uses simple word-based tokenization. If telemetry is Some, /metrics returns Prometheus text.
+pub async fn run_server_with_registry(
+    model_name_or_path: &str,
+    registry: &ModelRegistry,
+    tokenizer_path: Option<&Path>,
+    port: u16,
+    config: ServerConfig,
+    telemetry: Option<Arc<Telemetry>>,
+) -> Result<(), BitNetError> {
+    let model = from_pretrained(model_name_or_path, registry)
+        .map_err(|e| BitNetError::InvalidInput(e.to_string()))?;
+    let generator = TextGenerator::new(model);
+    let tokenizer: Option<Arc<BitNetTokenizer>> = match tokenizer_path {
+        Some(p) => BitNetTokenizer::from_file(p).ok().map(Arc::new),
+        None => None,
+    };
+    let state = Arc::new(ServerState {
+        generator: Arc::new(RwLock::new(generator)),
+        tokenizer,
+        config,
+        telemetry,
+    });
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+    let app = Router::new()
+        .route("/", get(health_check))
+        .route("/health", get(health_check))
+        .route("/v1/completions", post(completions))
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/models", get(list_models))
+        .route("/metrics", get(metrics))
+        .with_state(state)
+        .layer(TraceLayer::new_for_http())
+        .layer(cors);
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(BitNetError::Io)?;
+    tracing::info!("Server running on http://{}", addr);
+    axum::serve(listener, app).await.map_err(BitNetError::Io)?;
+    Ok(())
+}
+
+/// Run the HTTP server by path. If path does not exist, uses demo model.
+/// If tokenizer_path is None or invalid, uses simple word-based tokenization.
 /// If telemetry is Some, /metrics returns Prometheus text format and requests are recorded.
 pub async fn run_server(
     model_path: impl AsRef<Path>,

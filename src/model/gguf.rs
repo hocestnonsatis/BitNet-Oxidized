@@ -14,8 +14,11 @@ use std::path::Path;
 
 /// GGUF magic: "GGUF" = 0x46554747
 const GGUF_MAGIC: u32 = 0x4655_4747;
+/// GGUF version 2 (backward compatibility)
+const GGUF_VERSION_2: u32 = 2;
 /// GGUF version 3
 const GGUF_VERSION: u32 = 3;
+/// Tensor data alignment in file (32-byte)
 const GGUF_ALIGNMENT: u64 = 32;
 
 /// Value types in metadata
@@ -37,13 +40,18 @@ enum GGUFValueType {
     Float64 = 12,
 }
 
-/// Tensor storage type. F32 = 0, I2_S (2-bit BitNet) = 40 (custom).
+/// Tensor storage type. F32 = 0, F16 = 1, Q4_0/Q4_1/Q8_0 (llama.cpp), I2_S = 40 (BitNet).
 #[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[allow(non_camel_case_types, dead_code)]
 enum GGUFTensorType {
     F32 = 0,
     F16 = 1,
+    Q4_0 = 2,
+    Q4_1 = 3,
+    Q5_0 = 6,
+    Q5_1 = 7,
+    Q8_0 = 8,
     /// BitNet 2-bit: 4 weights per byte
     I2_S = 40,
 }
@@ -74,12 +82,33 @@ impl GGUFHeader {
     }
 }
 
-/// Tensor info: name, dimensions, type, file offset
+/// Tensor info: name, dimensions, type, file offset (internal).
 struct GGUFTensorInfo {
     name: String,
     dimensions: Vec<u64>,
     tensor_type: u32,
     offset: u64,
+}
+
+/// Tensor info for inspect CLI: name, dimensions, type name, offset, element count.
+#[derive(Debug, Clone)]
+pub struct TensorInfoInspect {
+    pub name: String,
+    pub dimensions: Vec<u64>,
+    pub tensor_type: u32,
+    pub type_name: String,
+    pub offset: u64,
+    pub n_elements: u64,
+}
+
+/// Result of inspecting a GGUF file (metadata and tensor list only).
+#[derive(Debug)]
+pub struct InspectResult {
+    pub version: u32,
+    pub metadata: HashMap<String, String>,
+    pub tensors: Vec<TensorInfoInspect>,
+    pub alignment_ok: bool,
+    pub alignment_errors: Vec<String>,
 }
 
 fn read_string<R: Read>(r: &mut R) -> std::io::Result<String> {
@@ -172,6 +201,29 @@ fn extract_f32(v: &GGUFValue) -> Option<f32> {
         GGUFValue::Float32(x) => Some(*x),
         _ => None,
     }
+}
+
+fn metadata_to_string_map(meta: &HashMap<String, GGUFValue>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (k, v) in meta {
+        let s = match v {
+            GGUFValue::UInt8(x) => x.to_string(),
+            GGUFValue::Int8(x) => x.to_string(),
+            GGUFValue::UInt16(x) => x.to_string(),
+            GGUFValue::Int16(x) => x.to_string(),
+            GGUFValue::UInt32(x) => x.to_string(),
+            GGUFValue::Int32(x) => x.to_string(),
+            GGUFValue::Float32(x) => x.to_string(),
+            GGUFValue::Bool(x) => x.to_string(),
+            GGUFValue::String(x) => x.clone(),
+            GGUFValue::UInt64(x) => x.to_string(),
+            GGUFValue::Int64(x) => x.to_string(),
+            GGUFValue::Float64(x) => x.to_string(),
+            GGUFValue::Array(arr) => format!("[{} items]", arr.len()),
+        };
+        out.insert(k.clone(), s);
+    }
+    out
 }
 
 /// Extract BitNetConfig from GGUF metadata (bitnet.* and general.architecture).
@@ -282,9 +334,46 @@ fn load_tensor_data(data: &[u8], info: &GGUFTensorInfo) -> Result<Vec<u8>, BitNe
 fn tensor_type_size(tensor_type: u32, n_elems: usize) -> (usize, bool) {
     match tensor_type {
         x if x == GGUFTensorType::F32 as u32 => (n_elems * 4, true),
+        x if x == GGUFTensorType::F16 as u32 => (n_elems * 2, true),
+        x if x == GGUFTensorType::Q4_0 as u32 => (n_elems / 2 + 4 + 4, false),
+        x if x == GGUFTensorType::Q4_1 as u32 => (n_elems / 2 + 4 + 4 + 4, false),
+        x if x == GGUFTensorType::Q8_0 as u32 => (n_elems + 4 + 4, false),
         x if x == GGUFTensorType::I2_S as u32 => (n_elems.div_ceil(4), false),
         _ => (0, false),
     }
+}
+
+/// Human-readable tensor type name for inspect.
+pub fn tensor_type_name(tensor_type: u32) -> &'static str {
+    match tensor_type {
+        x if x == GGUFTensorType::F32 as u32 => "F32",
+        x if x == GGUFTensorType::F16 as u32 => "F16",
+        x if x == GGUFTensorType::Q4_0 as u32 => "Q4_0",
+        x if x == GGUFTensorType::Q4_1 as u32 => "Q4_1",
+        x if x == GGUFTensorType::Q5_0 as u32 => "Q5_0",
+        x if x == GGUFTensorType::Q5_1 as u32 => "Q5_1",
+        x if x == GGUFTensorType::Q8_0 as u32 => "Q8_0",
+        x if x == GGUFTensorType::I2_S as u32 => "I2_S",
+        _ => "unknown",
+    }
+}
+
+/// Check that tensor data region starts at 32-byte aligned offset.
+fn validate_tensor_alignment(
+    data_base: u64,
+    tensor_infos: &[GGUFTensorInfo],
+) -> (bool, Vec<String>) {
+    let mut errors = Vec::new();
+    for info in tensor_infos {
+        let aligned = (data_base + info.offset).is_multiple_of(GGUF_ALIGNMENT);
+        if !aligned {
+            errors.push(format!(
+                "tensor {} offset {} not 32-byte aligned (base {})",
+                info.name, info.offset, data_base
+            ));
+        }
+    }
+    (errors.is_empty(), errors)
 }
 
 /// Load a BitNet model from a GGUF file.
@@ -296,7 +385,7 @@ pub fn load_gguf(path: impl AsRef<Path>) -> Result<BitNetModel, BitNetError> {
     if header.magic != GGUF_MAGIC {
         return Err(BitNetError::InvalidFormat("invalid GGUF magic".into()));
     }
-    if header.version != GGUF_VERSION {
+    if header.version != GGUF_VERSION && header.version != GGUF_VERSION_2 {
         return Err(BitNetError::UnsupportedGGUFVersion(header.version));
     }
 
@@ -310,7 +399,14 @@ pub fn load_gguf(path: impl AsRef<Path>) -> Result<BitNetModel, BitNetError> {
     let padding = (GGUF_ALIGNMENT - (pos % GGUF_ALIGNMENT)) % GGUF_ALIGNMENT;
     file.seek(SeekFrom::Current(padding as i64))
         .map_err(BitNetError::Io)?;
-    let _data_base = file.stream_position().map_err(BitNetError::Io)?;
+    let data_base = file.stream_position().map_err(BitNetError::Io)?;
+
+    let (align_ok, align_errors) = validate_tensor_alignment(data_base, &tensor_infos);
+    if !align_ok {
+        for e in &align_errors {
+            eprintln!("GGUF alignment: {}", e);
+        }
+    }
 
     let mut all_data = Vec::new();
     file.read_to_end(&mut all_data).map_err(BitNetError::Io)?;
@@ -684,5 +780,64 @@ pub fn save_gguf(model: &BitNetModel, path: impl AsRef<Path>) -> Result<(), BitN
             .map_err(BitNetError::Io)?;
     }
 
+    Ok(())
+}
+
+/// Inspect a GGUF file: metadata and tensor list only (no tensor data loaded).
+pub fn inspect_gguf(path: impl AsRef<Path>) -> Result<InspectResult, BitNetError> {
+    let path = path.as_ref();
+    let mut file = File::open(path).map_err(BitNetError::Io)?;
+    let header = GGUFHeader::read(&mut file).map_err(BitNetError::Io)?;
+
+    if header.magic != GGUF_MAGIC {
+        return Err(BitNetError::InvalidFormat("invalid GGUF magic".into()));
+    }
+    if header.version != GGUF_VERSION && header.version != GGUF_VERSION_2 {
+        return Err(BitNetError::UnsupportedGGUFVersion(header.version));
+    }
+
+    let meta = read_metadata(&mut file, header.metadata_kv_count).map_err(BitNetError::Io)?;
+    let tensor_infos =
+        read_tensor_infos(&mut file, header.tensor_count).map_err(BitNetError::Io)?;
+
+    let pos = file.stream_position().map_err(BitNetError::Io)?;
+    let padding = (GGUF_ALIGNMENT - (pos % GGUF_ALIGNMENT)) % GGUF_ALIGNMENT;
+    let data_base = pos + padding;
+
+    let (alignment_ok, alignment_errors) = validate_tensor_alignment(data_base, &tensor_infos);
+
+    let tensors: Vec<TensorInfoInspect> = tensor_infos
+        .into_iter()
+        .map(|t| {
+            let n_elements = t.dimensions.iter().product();
+            TensorInfoInspect {
+                name: t.name,
+                dimensions: t.dimensions,
+                tensor_type: t.tensor_type,
+                type_name: tensor_type_name(t.tensor_type).to_string(),
+                offset: t.offset,
+                n_elements,
+            }
+        })
+        .collect();
+
+    let metadata = metadata_to_string_map(&meta);
+
+    Ok(InspectResult {
+        version: header.version,
+        metadata,
+        tensors,
+        alignment_ok,
+        alignment_errors,
+    })
+}
+
+/// Repair a GGUF file: load and re-save to fix alignment and normalize to v3.
+pub fn repair_gguf(
+    path_in: impl AsRef<Path>,
+    path_out: impl AsRef<Path>,
+) -> Result<(), BitNetError> {
+    let model = load_gguf(path_in)?;
+    save_gguf(&model, path_out)?;
     Ok(())
 }
