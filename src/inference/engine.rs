@@ -344,7 +344,12 @@ impl InferenceEngine {
         let rms = (square_sum / n + eps).sqrt();
         static RMS_DEBUG: std::sync::Once = std::sync::Once::new();
         RMS_DEBUG.call_once(|| {
-            eprintln!("First RMSNorm: square_sum={:.4}, rms={:.4}, weight[0..5]={:?}", square_sum, rms, &weight[..5.min(weight.len())]);
+            eprintln!(
+                "First RMSNorm: square_sum={:.4}, rms={:.4}, weight[0..5]={:?}",
+                square_sum,
+                rms,
+                &weight[..5.min(weight.len())]
+            );
             if hidden.iter().any(|&x| x.is_nan()) {
                 eprintln!("  WARNING: NaN in hidden before norm!");
             }

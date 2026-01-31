@@ -87,7 +87,7 @@ fn generate_top_p_runs() {
     let model = create_demo_model();
     let gen = TextGenerator::new(model);
     let prompt = vec![0usize];
-    let out = gen.generate_top_p(&prompt, 5, 0.9, 0.8).unwrap();
+    let out = gen.generate_top_p(&prompt, 5, 0.9, 0.8, None, 1.0).unwrap();
     assert!(out.len() >= 1 && out.len() <= 5);
 }
 

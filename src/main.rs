@@ -138,7 +138,9 @@ fn main() -> Result<()> {
             greedy,
         } => {
             let config = if greedy {
-                eprintln!("Greedy mode enabled (temperature≈0, top_k=1, strong repetition penalty)");
+                eprintln!(
+                    "Greedy mode enabled (temperature≈0, top_k=1, strong repetition penalty)"
+                );
                 bitnet_oxidized::GenerationConfig {
                     max_tokens: 100,
                     temperature: 0.01,
@@ -161,7 +163,13 @@ fn main() -> Result<()> {
                     eos_token_id: Some(2),
                 }
             };
-            run_chat(&model, tokenizer.as_deref(), config, system_prompt.as_deref(), debug)?
+            run_chat(
+                &model,
+                tokenizer.as_deref(),
+                config,
+                system_prompt.as_deref(),
+                debug,
+            )?
         }
         Commands::Serve {
             model,
@@ -286,7 +294,7 @@ fn run_chat(
         create_demo_model()
     };
     let tokenizer = tokenizer_path
-        .map(|p| bitnet_oxidized::BitNetTokenizer::from_file(p))
+        .map(bitnet_oxidized::BitNetTokenizer::from_file)
         .transpose()
         .map_err(|e| anyhow::anyhow!("tokenizer: {}", e))?;
 
