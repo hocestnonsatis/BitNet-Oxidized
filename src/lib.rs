@@ -21,9 +21,9 @@ pub mod utils;
 
 pub use errors::BitNetError;
 pub use inference::{
-    CachedActivations, DynamicBatcher, GenerationToken, InferenceEngine, JsonSchema, KVCache,
-    PrefixCache, SpeculativeDecoder, StreamGenerator, StructuredGenerator, TextGenerator,
-    EOS_TOKEN,
+    CachedActivations, DynamicBatcher, GenerationConfig, GenerationToken, InferenceEngine,
+    JsonSchema, KVCache, PrefixCache, SpeculativeDecoder, StreamGenerator, StructuredGenerator,
+    TextGenerator, EOS_TOKEN,
 };
 pub use kernels::{
     build_lut, mat_vec_mul_basic, mat_vec_mul_blocked, mat_vec_mul_lut, ByteLut, TernaryTensor,

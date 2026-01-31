@@ -413,13 +413,36 @@ pub fn load_gguf(path: impl AsRef<Path>) -> Result<BitNetModel, BitNetError> {
         });
     }
 
-    Ok(BitNetModel {
+    let model = BitNetModel {
         config,
         embeddings,
         layers,
         norm,
         lm_head,
-    })
+    };
+
+    // Validation: embeddings and layer weights sanity check
+    let zero_emb_count = model
+        .embeddings
+        .iter()
+        .filter(|emb| emb.iter().all(|&x| x == 0.0))
+        .count();
+    if zero_emb_count > model.embeddings.len() / 2 {
+        eprintln!(
+            "WARNING: More than 50% of embeddings are zero ({} / {}). Model may not have loaded correctly.",
+            zero_emb_count,
+            model.embeddings.len()
+        );
+    }
+    for (i, layer) in model.layers.iter().enumerate() {
+        let raw = layer.q_proj.raw_data();
+        let zero_bytes = raw.iter().filter(|&&x| x == 0).count();
+        if zero_bytes == raw.len() {
+            eprintln!("WARNING: Layer {} attn_q (q_proj) is all zeros. Model may not have loaded correctly.", i);
+        }
+    }
+
+    Ok(model)
 }
 
 /// Write a single metadata KV

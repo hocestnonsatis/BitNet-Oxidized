@@ -129,6 +129,7 @@ def write_string(f, s: str):
 
 def write_metadata(f, config: dict):
     # GGUF value types: UINT32=4, FLOAT32=6, STRING=8
+    num_kv_heads = config.get("num_key_value_heads", config["num_attention_heads"])
     meta = [
         ("general.architecture", 8, "bitnet"),
         ("bitnet.vocab_size", 4, config["vocab_size"]),
@@ -137,6 +138,7 @@ def write_metadata(f, config: dict):
         ("bitnet.block_count", 4, config["num_hidden_layers"]),
         ("bitnet.feed_forward_length", 4, config["intermediate_size"]),
         ("bitnet.attention.head_count", 4, config["num_attention_heads"]),
+        ("bitnet.attention.key_value_head_count", 4, num_kv_heads),
         ("bitnet.attention.layer_norm_rms_epsilon", 6, float(config.get("rms_norm_eps", 1e-6))),
     ]
     for key, typ, val in meta:
@@ -245,12 +247,15 @@ def main():
 
     tensors = out_tensors
 
-    expected = 3 + num_layers * 11  # token_embd, output_norm, output + per layer
+    # bitnet-oxidized expects: token_embd, output_norm, output + per layer: attn_norm, attn_q,k,v,output, ffn_norm, ffn_gate,up,down (9 per layer)
+    expected = 3 + num_layers * 9
     if len(tensors) < expected:
-        print(f"Warning: got {len(tensors)} tensors, expected at least {expected}. Available keys: {keys[:20]}...")
+        print(f"Error: got {len(tensors)} tensors, expected {expected}. Missing tensors from HF model.")
+        print("Available keys (first 30):", keys[:30])
         if len(tensors) == 0:
             print("No tensors found. Check that model dir contains model.safetensors with LLaMA/BitNet layout.")
             return 1
+        return 1
 
     # Compute offsets (contiguous, no alignment between tensors to match Rust writer)
     data_offset = 0
@@ -260,7 +265,7 @@ def main():
         tensor_infos.append((name, dims, dtype, raw, data_offset))
         data_offset += n_bytes
 
-    meta_kv_count = 8
+    meta_kv_count = 9
     tensor_count = len(tensors)
 
     with open(out_path, "wb") as f:

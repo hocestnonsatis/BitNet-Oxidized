@@ -12,7 +12,7 @@ pub mod structured;
 pub use cache::KVCache;
 pub use dynamic_batch::DynamicBatcher;
 pub use engine::InferenceEngine;
-pub use generator::TextGenerator;
+pub use generator::{GenerationConfig, TextGenerator};
 pub use prefix_cache::{CachedActivations, PrefixCache};
 pub use speculative::SpeculativeDecoder;
 pub use streaming::{GenerationToken, StreamGenerator, EOS_TOKEN};

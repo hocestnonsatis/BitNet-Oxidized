@@ -48,10 +48,24 @@ enum Commands {
     Chat {
         #[arg(short, long)]
         model: PathBuf,
-        #[arg(short, long, default_value = "0.8")]
+        #[arg(long)]
+        tokenizer: Option<PathBuf>,
+        #[arg(short, long, default_value = "0.7")]
         temperature: f32,
+        #[arg(long, default_value = "0.9")]
+        top_p: f32,
+        #[arg(long, default_value = "50")]
+        top_k: usize,
+        #[arg(long, default_value = "1.2")]
+        repetition_penalty: f32,
+        #[arg(long, default_value = "0.5")]
+        frequency_penalty: f32,
+        #[arg(long, default_value = "0.3")]
+        presence_penalty: f32,
         #[arg(long)]
         system_prompt: Option<String>,
+        #[arg(long)]
+        debug: bool,
     },
 
     /// Server mode (HTTP API)
@@ -79,6 +93,14 @@ enum Commands {
         #[arg(long)]
         output: PathBuf,
     },
+
+    /// Test tokenizer: encode/decode and vocab check
+    TestTokenizer {
+        #[arg(short, long)]
+        tokenizer: PathBuf,
+        #[arg(short, long)]
+        text: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -101,9 +123,31 @@ fn main() -> Result<()> {
         Commands::Bench { model } => run_bench(&model)?,
         Commands::Chat {
             model,
+            tokenizer,
             temperature,
+            top_p,
+            top_k,
+            repetition_penalty,
+            frequency_penalty,
+            presence_penalty,
             system_prompt,
-        } => run_chat(&model, temperature, system_prompt.as_deref())?,
+            debug,
+        } => run_chat(
+            &model,
+            tokenizer.as_deref(),
+            bitnet_oxidized::GenerationConfig {
+                max_tokens: 100,
+                temperature,
+                top_p,
+                top_k: Some(top_k),
+                repetition_penalty,
+                frequency_penalty,
+                presence_penalty,
+                eos_token_id: Some(2),
+            },
+            system_prompt.as_deref(),
+            debug,
+        )?,
         Commands::Serve {
             model,
             port,
@@ -111,6 +155,7 @@ fn main() -> Result<()> {
         } => run_serve(&model, port, batch_size)?,
         Commands::Profile { model, iterations } => run_profile(&model, iterations)?,
         Commands::Quantize { input, output } => run_quantize(&input, &output)?,
+        Commands::TestTokenizer { tokenizer, text } => run_test_tokenizer(&tokenizer, &text)?,
     }
     Ok(())
 }
@@ -213,8 +258,10 @@ fn run_bench(model_path: &std::path::Path) -> Result<()> {
 
 fn run_chat(
     model_path: &std::path::Path,
-    temperature: f32,
+    tokenizer_path: Option<&std::path::Path>,
+    config: bitnet_oxidized::GenerationConfig,
     _system_prompt: Option<&str>,
+    debug: bool,
 ) -> Result<()> {
     info!("Loading model from {:?}...", model_path);
     let model = if model_path.exists() {
@@ -223,12 +270,56 @@ fn run_chat(
         info!("Model file not found, using demo model");
         create_demo_model()
     };
+    let tokenizer = tokenizer_path
+        .map(|p| bitnet_oxidized::BitNetTokenizer::from_file(p))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("tokenizer: {}", e))?;
+
+    if debug {
+        let engine = InferenceEngine::new(model.clone());
+        let test_ids = vec![1usize, 2, 3];
+        println!(
+            "\n--- DEBUG: Forward pass on test token IDs {:?} ---",
+            test_ids
+        );
+        let logits = engine.forward(&test_ids)?;
+        let min_l = logits.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let max_l = logits.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let mean_l = logits.iter().sum::<f32>() / logits.len() as f32;
+        println!(
+            "  Logits: len={}, min={:.4}, max={:.4}, mean={:.4}",
+            logits.len(),
+            min_l,
+            max_l,
+            mean_l
+        );
+        if logits.iter().any(|&x| x.is_nan() || x.is_infinite()) {
+            println!("  WARNING: Logits contain NaN or Inf!");
+        }
+        let mut indexed: Vec<(usize, f32)> =
+            logits.iter().enumerate().map(|(i, &l)| (i, l)).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        println!("  Top 5 predictions:");
+        for (idx, (tid, logit)) in indexed.iter().take(5).enumerate() {
+            let token_text = tokenizer
+                .as_ref()
+                .and_then(|t| t.decode(&[*tid]).ok())
+                .unwrap_or_else(|| format!("{}", tid));
+            println!(
+                "    {}: token_id={} logit={:.2} text={:?}",
+                idx + 1,
+                tid,
+                logit,
+                token_text
+            );
+        }
+        println!("--- END DEBUG ---\n");
+    }
+
     let gen = TextGenerator::new(model);
-    println!(
-        "Chat (demo). Type 'quit' to exit. Temperature: {}",
-        temperature
-    );
-    let mut prompt_ids = vec![0usize];
+    println!("Chat. Type 'quit' to exit.");
+    println!("  temperature={}, top_p={}, top_k={:?}, repetition_penalty={}, frequency_penalty={}, presence_penalty={}",
+        config.temperature, config.top_p, config.top_k, config.repetition_penalty, config.frequency_penalty, config.presence_penalty);
     loop {
         print!("> ");
         use std::io::Write;
@@ -239,20 +330,39 @@ fn run_chat(
         {
             break;
         }
-        let ids = simple_tokenizer(line.trim());
+        let ids = if let Some(ref tok) = tokenizer {
+            // LLaMA-style chat format: <s>[INST] user message [/INST]  (model then generates assistant reply)
+            let formatted = format!("<s>[INST] {} [/INST] ", line.trim());
+            tok.encode(&formatted).unwrap_or_default()
+        } else {
+            simple_tokenizer(line.trim()).into_iter().collect()
+        };
         if ids.is_empty() {
             continue;
         }
-        let max_len = prompt_ids.len() + ids.len() + 20;
-        let out = gen.generate_top_p(&ids, max_len, 0.9, temperature)?;
-        let text: String = out
+        let out = gen.generate_with_config(&ids, &config)?;
+        let eos_id = config.eos_token_id.unwrap_or(2);
+        let new_ids: Vec<usize> = out
             .iter()
             .skip(ids.len())
-            .map(|&i| format!("{} ", i))
-            .take(20)
+            .take_while(|&&id| id != eos_id)
+            .copied()
             .collect();
+        let text = if let Some(ref tok) = tokenizer {
+            tok.decode(&new_ids).unwrap_or_else(|_| {
+                new_ids
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+        } else {
+            new_ids
+                .iter()
+                .map(|&i| format!("{} ", i))
+                .collect::<String>()
+        };
         println!("{}", text.trim());
-        prompt_ids = out;
     }
     Ok(())
 }
@@ -306,6 +416,30 @@ fn run_quantize(input: &std::path::Path, output: &std::path::Path) -> Result<()>
     let model = gguf::load_gguf(input).map_err(|e| anyhow::anyhow!("load GGUF: {:?}", e))?;
     gguf::save_gguf(&model, output).map_err(|e| anyhow::anyhow!("save GGUF: {:?}", e))?;
     println!("Saved quantized model to {}", output.display());
+    Ok(())
+}
+
+fn run_test_tokenizer(tokenizer_path: &std::path::Path, text: &str) -> Result<()> {
+    let tok = bitnet_oxidized::BitNetTokenizer::from_file(tokenizer_path)
+        .map_err(|e| anyhow::anyhow!("tokenizer: {}", e))?;
+    let ids = tok
+        .encode(text)
+        .map_err(|e| anyhow::anyhow!("encode: {}", e))?;
+    let decoded = tok
+        .decode(&ids)
+        .map_err(|e| anyhow::anyhow!("decode: {}", e))?;
+    println!("Input: {}", text);
+    println!("Token IDs: {:?}", ids);
+    println!("Decoded: {}", decoded);
+    println!("\nVocab check:");
+    for id in &ids {
+        if *id >= 32000 {
+            println!(
+                "  WARNING: Token ID {} may be out of range (vocab often 32000-32002)",
+                id
+            );
+        }
+    }
     Ok(())
 }
 

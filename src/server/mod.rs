@@ -191,6 +191,8 @@ async fn completions(
             prompt_ids.len() + max_tokens,
             top_p,
             temperature,
+            None,
+            1.0,
         )
     }
     .map_err(ApiError::generation)?;
@@ -239,7 +241,14 @@ async fn chat_completions(
 
     let gen = state.generator.read().await;
     let output_ids = gen
-        .generate_top_p(&prompt_ids, prompt_ids.len() + max_tokens, 0.9, temperature)
+        .generate_top_p(
+            &prompt_ids,
+            prompt_ids.len() + max_tokens,
+            0.9,
+            temperature,
+            None,
+            1.0,
+        )
         .map_err(ApiError::generation)?;
 
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;

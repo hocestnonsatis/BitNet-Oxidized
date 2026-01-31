@@ -71,7 +71,7 @@ impl StreamGenerator {
             for _ in 0..(target_len - ids.len()) {
                 let out = {
                     let g = gen.read().await;
-                    g.generate_top_p(&ids, ids.len() + 1, 0.9, temperature.max(1e-6))
+                    g.generate_top_p(&ids, ids.len() + 1, 0.9, temperature.max(1e-6), None, 1.0)
                 };
 
                 match out {
