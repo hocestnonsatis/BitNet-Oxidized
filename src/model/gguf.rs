@@ -367,6 +367,19 @@ pub fn load_gguf(path: impl AsRef<Path>) -> Result<BitNetModel, BitNetError> {
     };
 
     let embeddings_raw = get_f32("token_embd")?;
+    let zero_count = embeddings_raw.iter().filter(|&&x| x == 0.0).count();
+    let nan_count = embeddings_raw.iter().filter(|&&x| x.is_nan()).count();
+    eprintln!(
+        "GGUF: token_embd [vocab={}, hidden={}], zeros={}/{}, nans={}",
+        vocab,
+        hidden,
+        zero_count,
+        embeddings_raw.len(),
+        nan_count
+    );
+    if zero_count > embeddings_raw.len() / 2 {
+        eprintln!("  WARNING: >50% zeros - possible loading error!");
+    }
     let embeddings: Vec<Vec<f32>> = embeddings_raw
         .chunks(hidden)
         .take(vocab)
@@ -400,8 +413,13 @@ pub fn load_gguf(path: impl AsRef<Path>) -> Result<BitNetModel, BitNetError> {
                 actual: input_layernorm.len().max(post_attention_layernorm.len()),
             });
         }
+        let q_proj = get_ternary(&format!("{}attn_q", prefix))?;
+        let q_raw = q_proj.raw_data();
+        if q_raw.iter().all(|&b| b == 0) {
+            eprintln!("  WARNING: Layer {} attn_q is ALL ZEROS", i);
+        }
         layers.push(BitNetLayer {
-            q_proj: get_ternary(&format!("{}attn_q", prefix))?,
+            q_proj,
             k_proj: get_ternary(&format!("{}attn_k", prefix))?,
             v_proj: get_ternary(&format!("{}attn_v", prefix))?,
             o_proj: get_ternary(&format!("{}attn_output", prefix))?,

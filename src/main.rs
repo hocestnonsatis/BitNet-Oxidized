@@ -66,6 +66,9 @@ enum Commands {
         system_prompt: Option<String>,
         #[arg(long)]
         debug: bool,
+        /// Greedy mode: temperature≈0, top_k=1, strong repetition penalty
+        #[arg(long)]
+        greedy: bool,
     },
 
     /// Server mode (HTTP API)
@@ -132,22 +135,34 @@ fn main() -> Result<()> {
             presence_penalty,
             system_prompt,
             debug,
-        } => run_chat(
-            &model,
-            tokenizer.as_deref(),
-            bitnet_oxidized::GenerationConfig {
-                max_tokens: 100,
-                temperature,
-                top_p,
-                top_k: Some(top_k),
-                repetition_penalty,
-                frequency_penalty,
-                presence_penalty,
-                eos_token_id: Some(2),
-            },
-            system_prompt.as_deref(),
-            debug,
-        )?,
+            greedy,
+        } => {
+            let config = if greedy {
+                eprintln!("Greedy mode enabled (temperature≈0, top_k=1, strong repetition penalty)");
+                bitnet_oxidized::GenerationConfig {
+                    max_tokens: 100,
+                    temperature: 0.01,
+                    top_p: 1.0,
+                    top_k: Some(1),
+                    repetition_penalty: 2.0,
+                    frequency_penalty: 1.0,
+                    presence_penalty: 0.5,
+                    eos_token_id: Some(2),
+                }
+            } else {
+                bitnet_oxidized::GenerationConfig {
+                    max_tokens: 100,
+                    temperature,
+                    top_p,
+                    top_k: Some(top_k),
+                    repetition_penalty,
+                    frequency_penalty,
+                    presence_penalty,
+                    eos_token_id: Some(2),
+                }
+            };
+            run_chat(&model, tokenizer.as_deref(), config, system_prompt.as_deref(), debug)?
+        }
         Commands::Serve {
             model,
             port,
@@ -340,7 +355,7 @@ fn run_chat(
         if ids.is_empty() {
             continue;
         }
-        let out = gen.generate_with_config(&ids, &config)?;
+        let out = gen.generate_with_config(&ids, &config, debug)?;
         let eos_id = config.eos_token_id.unwrap_or(2);
         let new_ids: Vec<usize> = out
             .iter()

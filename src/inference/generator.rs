@@ -186,10 +186,12 @@ impl TextGenerator {
     }
 
     /// Generate with full config: KV cache, all penalties, top-k + top-p (nucleus) sampling.
+    /// When `debug` is true, prints first sampling step: logits before/after penalties and sampled token.
     pub fn generate_with_config(
         &self,
         prompt_ids: &[usize],
         config: &GenerationConfig,
+        debug: bool,
     ) -> Result<Vec<usize>> {
         if prompt_ids.is_empty() {
             anyhow::bail!("prompt_ids must not be empty");
@@ -207,9 +209,35 @@ impl TextGenerator {
         }
 
         let max_length = (prompt_ids.len() + config.max_tokens).min(ids.capacity());
+        let mut first_step = debug;
         for _ in ids.len()..max_length {
+            if first_step {
+                eprintln!("\nFirst generation step debug:");
+                eprintln!("  Input tokens: {:?}", ids);
+                let mut sorted: Vec<(usize, f32)> =
+                    logits.iter().enumerate().map(|(i, &l)| (i, l)).collect();
+                sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                eprintln!("  Logits before penalties (top 10):");
+                for (i, (tid, l)) in sorted.iter().take(10).enumerate() {
+                    eprintln!("    {}: token_id={} logit={:.2}", i, tid, l);
+                }
+            }
             Self::apply_penalties(&mut logits, &ids, &token_counts, config);
+            if first_step {
+                let mut sorted: Vec<(usize, f32)> =
+                    logits.iter().enumerate().map(|(i, &l)| (i, l)).collect();
+                sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                eprintln!("  Logits after penalties (top 10):");
+                for (i, (tid, l)) in sorted.iter().take(10).enumerate() {
+                    eprintln!("    {}: token_id={} logit={:.2}", i, tid, l);
+                }
+            }
             let next_id = sample_nucleus(&logits, config.top_p, config.top_k, t)?;
+            if first_step {
+                eprintln!("  Sampled token: {}", next_id);
+                eprintln!();
+                first_step = false;
+            }
             ids.push(next_id);
             *token_counts.entry(next_id).or_insert(0) += 1;
             if config.eos_token_id == Some(next_id) {

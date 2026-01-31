@@ -189,6 +189,18 @@ impl InferenceEngine {
         mat_vec_mul_simd(&layer.k_proj, &normed, &mut k);
         mat_vec_mul_simd(&layer.v_proj, &normed, &mut v);
 
+        static LAYER0_DEBUG: std::sync::Once = std::sync::Once::new();
+        LAYER0_DEBUG.call_once(|| {
+            eprintln!("Layer 0 attention debug:");
+            eprintln!("  hidden[0..5]: {:?}", &hidden[..5.min(hidden.len())]);
+            eprintln!("  Q[0..5]: {:?}", &q[..5.min(q.len())]);
+            eprintln!("  K[0..5]: {:?}", &k[..5.min(k.len())]);
+            eprintln!("  V[0..5]: {:?}", &v[..5.min(v.len())]);
+            if q.iter().all(|&x| x == 0.0) {
+                eprintln!("  WARNING: Q projection is all zeros at layer 0!");
+            }
+        });
+
         // Store only num_kv_heads K/V (GQA: one KV head per group of Q heads)
         let keys_for_cache: Vec<Vec<Vec<f32>>> = (0..num_kv_heads)
             .map(|h| vec![k[h * head_dim..(h + 1) * head_dim].to_vec()])
@@ -330,6 +342,13 @@ impl InferenceEngine {
         let n = hidden.len() as f32;
         let square_sum: f32 = hidden.iter().map(|x| x * x).sum();
         let rms = (square_sum / n + eps).sqrt();
+        static RMS_DEBUG: std::sync::Once = std::sync::Once::new();
+        RMS_DEBUG.call_once(|| {
+            eprintln!("First RMSNorm: square_sum={:.4}, rms={:.4}, weight[0..5]={:?}", square_sum, rms, &weight[..5.min(weight.len())]);
+            if hidden.iter().any(|&x| x.is_nan()) {
+                eprintln!("  WARNING: NaN in hidden before norm!");
+            }
+        });
         for (i, h) in hidden.iter_mut().enumerate() {
             if i < weight.len() {
                 *h = (*h / rms) * weight[i];
