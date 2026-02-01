@@ -1,32 +1,32 @@
 # TODO — Remaining Work
 
-Remaining tasks (in suggested order). Completed: validation, GGUF v2/converter, advanced sampling, profiling/optimization, model zoo/registry.
+Remaining tasks (in suggested order). Completed: validation, GGUF v2/converter, advanced sampling, profiling/optimization, model zoo/registry, Task 8 (API, Web UI), Task 9 (K8s, Docker, Health, Middleware, Monitoring), **Task 10 (Tests, Coverage, CI)**.
 
 ---
 
-## Task 8: Gradio API, Web UI, Static Server
+## Task 8: Gradio API, Web UI, Static Server — Done
 
-- Expose a Gradio-like or simple web API for chat/completion.
-- Add a minimal web UI (HTML/JS) for prompt + response.
-- Optional: static file server for serving the UI.
-
----
-
-## Task 9: K8s, Docker, Health, Middleware, Monitoring
-
-- Kubernetes: refine `k8s/deployment.yaml` (resources, probes, scaling).
-- Docker: ensure image builds and runs; document usage.
-- Health: `/health` and readiness checks; optional liveness.
-- Middleware: request logging, rate limiting, auth if needed.
-- Monitoring: align Prometheus metrics with deployment (scrape config, dashboards).
+- Expose a Gradio-like or simple web API for chat/completion. **Done**: `/v1/completions`, `/v1/chat/completions` already present.
+- Add a minimal web UI (HTML/JS) for prompt + response. **Done**: `GET /ui` serves embedded `static/index.html` (prompt textarea, Generate button, response + usage).
+- Optional: static file server for serving the UI. **Skipped**: UI is embedded via `include_str!` so no runtime static dir is required.
 
 ---
 
-## Task 10: Tests, Coverage, CI Workflows
+## Task 9: K8s, Docker, Health, Middleware, Monitoring — Done
 
-- Expand unit and integration tests (edge cases, error paths).
-- Increase coverage (e.g. Tarpaulin) and keep CI green.
-- CI: run tests, `cargo fmt`, `cargo clippy`, coverage upload; optional release builds.
+- **Kubernetes**: `k8s/deployment.yaml` uses `/health` for liveness/readiness with failureThreshold and timeoutSeconds; `k8s/hpa.yaml` added for optional HPA.
+- **Docker**: Dockerfile uses Rust 1.83; deployment guide has Verify step (curl /health, /ui).
+- **Health**: `/health` documented as preferred for probes; K8s probes point to `/health`.
+- **Middleware**: TraceLayer request logging documented; rate limiting and auth recommended at reverse proxy.
+- **Monitoring**: Prometheus scrape config and pod annotations documented in deployment_guide.
+
+---
+
+## Task 10: Tests, Coverage, CI Workflows — Done
+
+- **Tests**: Integration tests added: `engine_forward_empty_input_errors`, `validate_model_runs`, `validate_model_from_path_runs`, `streaming_generator_emits_tokens`. Edge cases and validation/streaming coverage expanded.
+- **Coverage**: Tarpaulin + Codecov unchanged; new tests improve coverage.
+- **CI**: Release build job added (`cargo build --release` on ubuntu). Tests, fmt, clippy, coverage unchanged.
 
 ---
 

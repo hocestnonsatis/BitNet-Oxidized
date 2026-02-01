@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BitNet-Oxidized — Chat</title>
+  <style>
+    :root { --bg: #0f0f12; --surface: #1a1a1f; --text: #e4e4e7; --muted: #71717a; --accent: #a78bfa; --border: #27272a; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; min-height: 100vh; }
+    .container { max-width: 42rem; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.5rem; }
+    label { display: block; font-size: 0.875rem; margin-bottom: 0.375rem; color: var(--muted); }
+    textarea { width: 100%; min-height: 100px; padding: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); resize: vertical; font-size: 0.9375rem; }
+    textarea:focus { outline: none; border-color: var(--accent); }
+    .row { display: flex; gap: 0.75rem; align-items: center; margin-top: 0.75rem; }
+    button { padding: 0.5rem 1rem; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-weight: 500; cursor: pointer; font-size: 0.9375rem; }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .output { margin-top: 1.5rem; padding: 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; word-break: break-word; min-height: 4rem; }
+    .output.empty { color: var(--muted); }
+    .meta { font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; }
+    .error { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>BitNet-Oxidized</h1>
+    <p class="sub">Prompt the model and get a completion.</p>
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt" placeholder="Enter your prompt…"></textarea>
+    <div class="row">
+      <button id="btn" type="button">Generate</button>
+      <span class="meta" id="meta"></span>
+    </div>
+    <label for="output" style="margin-top: 1rem;">Response</label>
+    <div id="output" class="output empty" aria-live="polite">No response yet.</div>
+  </div>
+  <script>
+    const promptEl = document.getElementById('prompt');
+    const btn = document.getElementById('btn');
+    const outputEl = document.getElementById('output');
+    const metaEl = document.getElementById('meta');
+
+    function setOutput(text, isError) {
+      outputEl.textContent = text || 'No response yet.';
+      outputEl.classList.toggle('empty', !text);
+      outputEl.classList.toggle('error', !!isError);
+    }
+
+    btn.addEventListener('click', async () => {
+      const prompt = promptEl.value.trim();
+      if (!prompt) return;
+      btn.disabled = true;
+      metaEl.textContent = '';
+      setOutput('Generating…', false);
+
+      try {
+        const res = await fetch('/v1/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, max_tokens: 80, temperature: 0.8 })
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          let err = text;
+          try { const j = JSON.parse(text); err = j.detail || j.message || err; } catch (_) {}
+          setOutput(err || res.statusText || 'Request failed', true);
+          return;
+        }
+        let data;
+        try { data = JSON.parse(text); } catch (_) { setOutput(text || '(empty)', false); return; }
+        setOutput(data.text || '(empty)', false);
+        if (data.usage) {
+          metaEl.textContent = `${data.usage.completion_tokens} tokens · ${(data.usage.time_ms / 1000).toFixed(2)}s`;
+        }
+      } catch (e) {
+        setOutput('Error: ' + e.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

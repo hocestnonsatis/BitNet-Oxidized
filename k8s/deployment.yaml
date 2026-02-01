@@ -13,6 +13,10 @@ spec:
     metadata:
       labels:
         app: bitnet-oxidized
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
         - name: bitnet-oxidized
@@ -36,16 +40,20 @@ spec:
               cpu: "2"
           livenessProbe:
             httpGet:
-              path: /
+              path: /health
               port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 15
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /
+              path: /health
               port: 8080
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: models
               mountPath: /models

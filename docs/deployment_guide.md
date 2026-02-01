@@ -26,10 +26,21 @@ docker run -p 8080:8080 -v /path/to/models:/models:ro \
   bitnet-oxidized serve --model /models/my_model.gguf --port 8080
 ```
 
+### Verify
+
+After starting the container, check health and Web UI:
+
+```bash
+curl -s http://localhost:8080/health
+# => OK
+
+# Open in browser: http://localhost:8080/ui
+```
+
 ### Dockerfile reference
 
 ```dockerfile
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.83-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release
@@ -78,11 +89,55 @@ Example manifests are in `k8s/deployment.yaml`: Deployment (3 replicas) and Serv
   ```
 - **Batch size**: The `serve` command accepts `--batch-size`; increase for higher throughput if the server supports batching.
 
+## HTTP API and Web UI
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/`, `/health` | GET | Health check (returns `OK`). |
+| `/ui` | GET | Minimal web UI: prompt textarea and Generate button; calls `/v1/completions`. |
+| `/v1/completions` | POST | Text completion (JSON: `prompt`, `max_tokens`, `temperature`, etc.). |
+| `/v1/chat/completions` | POST | Chat completion (JSON: `messages`, `max_tokens`, `temperature`). |
+| `/v1/models` | GET | List models. |
+| `/metrics` | GET | Prometheus metrics (if telemetry enabled). |
+
 ## Health and readiness
 
-The HTTP server exposes `/` for health. The Kubernetes manifests use:
+The HTTP server exposes `/` and `/health`; both return `OK`. Prefer **`/health`** for liveness and readiness probes.
 
-- **Liveness**: `GET /` on 8080; failure restarts the pod.
-- **Readiness**: `GET /` on 8080; failure removes the pod from Service endpoints.
+In `k8s/deployment.yaml`:
 
-Use `/metrics` (if implemented) for monitoring and autoscaling.
+- **Liveness**: `GET /health` on 8080; failure restarts the pod (initialDelaySeconds 15, period 20s, failureThreshold 3).
+- **Readiness**: `GET /health` on 8080; failure removes the pod from Service endpoints (initialDelaySeconds 10, period 10s, failureThreshold 3).
+
+Optional scaling: apply `k8s/hpa.yaml` for a HorizontalPodAutoscaler (CPU/memory targets). Requires metrics-server or custom metrics.
+
+## Middleware and production hardening
+
+- **Request logging**: The server uses `TraceLayer`; HTTP requests and responses are logged via `tracing` (set `RUST_LOG=info` or `debug`).
+- **Rate limiting**: Not built in. For production, put a reverse proxy (nginx, Envoy, or an API gateway) in front and configure rate limits and auth there.
+- **Auth**: Optional; add at the proxy or implement a custom Axum layer (e.g. API key header).
+
+## Monitoring (Prometheus)
+
+When the server is started with telemetry (default for `serve`), `GET /metrics` returns Prometheus text format (counters for requests and tokens).
+
+Example **Prometheus scrape config**:
+
+```yaml
+scrape_configs:
+  - job_name: bitnet-oxidized
+    static_configs:
+      - targets: ['bitnet-oxidized:8080']
+    metrics_path: /metrics
+    scrape_interval: 15s
+```
+
+For Kubernetes, use a ServiceMonitor (Prometheus Operator) or annotate the Service so your Prometheus scrapes the pods. Example pod annotation:
+
+```yaml
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+```

@@ -23,7 +23,7 @@ This is a research-oriented implementation. It is not production-hardened and do
 - **Tokenizer**: Optional tokenizer from file for `infer`/`chat`; otherwise naive tokenizer.
 - **Quantization**: AbsMax FP32→ternary; CLI **quantize**.
 - **CLI**: `demo`, `infer`, `info`, `bench`, `chat`, `serve`, `profile`, `quantize`, `test-tokenizer`, **validate**, **convert**, **repair**, **inspect**, **models**.
-- **HTTP server**: Axum API (completions, chat, health, metrics). See [docs/deployment_guide.md](docs/deployment_guide.md).
+- **HTTP server**: Axum API (completions, chat, health, metrics). **Web UI**: `GET /ui` for a minimal prompt+response page. See [docs/deployment_guide.md](docs/deployment_guide.md).
 - **Errors and profiling**: `BitNetError`, `Profiler`, `DetailedMetrics`, `InferenceProfiler`.
 
 ---

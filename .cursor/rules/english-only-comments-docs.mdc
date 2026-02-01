@@ -1,0 +1,37 @@
+---
+description: All comments and documentation must be in English
+alwaysApply: true
+---
+
+# Project Language: English
+
+All comments, doc comments, and documentation in this project must be written in **English**.
+
+## Applies To
+
+- **Rust**: `//` and `///` comments, `//!` crate/module docs, docstrings
+- **Markdown**: `docs/**`, `README.md`, and any `.md` files
+- **Scripts**: Comments in Python, shell, or other scripts under `scripts/`
+
+## Examples
+
+```rust
+// ✅ GOOD
+/// Runs a forward pass over the given token ids.
+
+// ❌ BAD
+/// Verilen token id'leri üzerinde ileri geçiş yapar.
+```
+
+```markdown
+<!-- ✅ GOOD -->
+## How Coverage Is Measured
+
+<!-- ❌ BAD -->
+## Nasıl Ölçülüyor?
+```
+
+## When Adding or Editing
+
+- Write new comments and docs in English.
+- If you find non-English text in comments or docs, translate it to English.

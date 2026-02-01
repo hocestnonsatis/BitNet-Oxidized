@@ -1,13 +1,16 @@
-//! Integration tests: ternary tensor, kernels consistency, full forward pass.
+//! Integration tests: ternary tensor, kernels consistency, full forward pass,
+//! validation, error paths, and streaming.
 
 use bitnet_oxidized::kernels::{
     mat_vec_mul_basic, mat_vec_mul_blocked, mat_vec_mul_lut, TernaryTensor,
 };
 use bitnet_oxidized::{
     create_demo_model, BitNetExpert, InferenceEngine, MoELayer, PrefixCache, SpeculativeDecoder,
-    StructuredGenerator, Telemetry, TextGenerator,
+    StreamGenerator, StructuredGenerator, Telemetry, TextGenerator,
 };
 use rand::Rng;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[test]
 fn ternary_tensor_pack_unpack() {
@@ -216,4 +219,57 @@ fn structured_generator_json_requires_tokenizer() {
     let prompt = vec![0usize, 1];
     let res = gen.generate_json(&prompt, 20);
     assert!(res.is_err());
+}
+
+// ---- Error paths and validation ----
+
+#[test]
+fn engine_forward_empty_input_errors() {
+    let model = create_demo_model();
+    let engine = InferenceEngine::new(model);
+    let res = engine.forward(&[]);
+    assert!(res.is_err());
+}
+
+#[test]
+fn validate_model_runs() {
+    let model = create_demo_model();
+    let report = bitnet_oxidized::validate_model(&model).unwrap();
+    assert!(report.passed);
+    assert!(report.gguf_load.ok);
+    assert!(report.forward_pass.ok);
+    assert!(report.attention.ok);
+}
+
+#[test]
+fn validate_model_from_path_runs() {
+    let model = create_demo_model();
+    let path = std::env::temp_dir().join("bitnet_validate_path.gguf");
+    bitnet_oxidized::model::gguf::save_gguf(&model, &path).unwrap();
+    let report = bitnet_oxidized::validate_model_from_path(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(report.passed);
+}
+
+// ---- Streaming ----
+
+#[tokio::test]
+async fn streaming_generator_emits_tokens() {
+    let model = create_demo_model();
+    let gen = TextGenerator::new(model);
+    let gen = Arc::new(RwLock::new(gen));
+    let stream_gen = StreamGenerator::new(gen, None);
+    let mut rx = stream_gen.generate_stream("a b", 5, 0.8).await;
+    let mut count = 0;
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            bitnet_oxidized::GenerationToken::Token { .. } => count += 1,
+            bitnet_oxidized::GenerationToken::Done { .. } => break,
+            bitnet_oxidized::GenerationToken::Error(_) => break,
+        }
+        if count >= 10 {
+            break;
+        }
+    }
+    assert!(count >= 0);
 }

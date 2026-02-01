@@ -1,0 +1,26 @@
+---
+description: Use demo model and deterministic seeds in tests; English test names
+globs: "**/*.rs"
+alwaysApply: false
+---
+
+# Rust Testing
+
+## Model Fixtures
+
+- Use `create_demo_model()` for tests that do not require reproducibility.
+- Use `create_demo_model_seeded(seed)` when tests need deterministic behavior (e.g. reference comparison, regression).
+
+```rust
+// ✅ GOOD
+let model = create_demo_model();
+let engine = InferenceEngine::new(model);
+
+// ✅ GOOD (deterministic)
+let model = create_demo_model_seeded(42);
+let logits_a = engine.forward(&[0, 1, 2]).unwrap();
+```
+
+## Test Names and Assertions
+
+- Test names and assertion messages in English (see project English-only rule for comments/docs).

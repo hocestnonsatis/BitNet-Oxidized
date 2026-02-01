@@ -1,0 +1,27 @@
+---
+description: Rust error handling and CI compliance (fmt, clippy)
+globs: "**/*.rs"
+alwaysApply: false
+---
+
+# Rust Standards
+
+## Error Handling
+
+- **Library code**: Use `Result<T, E>` and `?`. Prefer `crate::errors::BitNetError` (thiserror) or `anyhow::Result` where appropriate. Avoid `unwrap()` and `expect()` where the operation can fail.
+- **Binary** (`main.rs`): `anyhow::Result` is acceptable; `unwrap()`/`expect()` only for programming errors (e.g. valid CLI args).
+
+```rust
+// ✅ GOOD (lib)
+pub fn load(path: &Path) -> Result<Model, BitNetError> {
+    let data = std::fs::read(path)?;
+    parse(&data).map_err(|e| BitNetError::InvalidFormat(e.to_string()))
+}
+
+// ❌ BAD (lib, can fail)
+let data = std::fs::read(path).unwrap();
+```
+
+## CI Compliance
+
+- Code must pass `cargo fmt --check` and `cargo clippy -- -D warnings`. Run these locally before pushing.

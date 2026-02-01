@@ -143,6 +143,7 @@ pub async fn run_server_with_registry(
     let app = Router::new()
         .route("/", get(health_check))
         .route("/health", get(health_check))
+        .route("/ui", get(serve_ui))
         .route("/v1/completions", post(completions))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/models", get(list_models))
@@ -155,6 +156,7 @@ pub async fn run_server_with_registry(
         .await
         .map_err(BitNetError::Io)?;
     tracing::info!("Server running on http://{}", addr);
+    tracing::info!("Web UI: http://{}:{}/ui", addr.ip(), addr.port());
     axum::serve(listener, app).await.map_err(BitNetError::Io)?;
     Ok(())
 }
@@ -197,6 +199,7 @@ pub async fn run_server(
     let app = Router::new()
         .route("/", get(health_check))
         .route("/health", get(health_check))
+        .route("/ui", get(serve_ui))
         .route("/v1/completions", post(completions))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/models", get(list_models))
@@ -210,8 +213,17 @@ pub async fn run_server(
         .await
         .map_err(BitNetError::Io)?;
     tracing::info!("Server running on http://{}", addr);
+    tracing::info!("Web UI: http://{}:{}/ui", addr.ip(), addr.port());
     axum::serve(listener, app).await.map_err(BitNetError::Io)?;
     Ok(())
+}
+
+/// Serves the embedded web UI (prompt + completion).
+async fn serve_ui() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../../static/index.html"),
+    )
 }
 
 async fn health_check() -> &'static str {

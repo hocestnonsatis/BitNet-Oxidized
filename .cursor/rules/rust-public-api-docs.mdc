@@ -1,0 +1,23 @@
+---
+description: Public API items must have doc comments (/// or //!)
+globs: "src/**/*.rs"
+alwaysApply: false
+---
+
+# Public API Documentation
+
+## Doc Comments
+
+- **Public items** (`pub fn`, `pub struct`, `pub enum`, `pub const` re-exported from lib): add a `///` doc comment describing purpose and, for functions, args/return/errors where non-obvious.
+- **Modules**: add `//!` module-level docs for non-trivial modules (e.g. inference, model, kernels).
+
+```rust
+// ✅ GOOD
+/// Runs a forward pass; returns logits for the last token.
+pub fn forward(&self, input_ids: &[usize]) -> Result<Vec<f32>> { ... }
+
+// ❌ BAD (no doc)
+pub fn forward(&self, input_ids: &[usize]) -> Result<Vec<f32>> { ... }
+```
+
+- Keep doc text in English (see project English-only rule).
